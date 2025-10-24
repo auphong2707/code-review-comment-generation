@@ -22,23 +22,40 @@ This repository contains implementations for training various deep learning mode
 │   │   │   ├── main_qwen15_ia3.py
 │   │   │   ├── main_qwen15_lora.py
 │   │   │   └── main_qwen15_qlora.py
-│   │   └── qwen25/              # Qwen2.5 model scripts
-│   │       ├── main_qwen25_fmft.py
-│   │       ├── main_qwen25_ia3.py
-│   │       ├── main_qwen25_lora.py
-│   │       └── main_qwen25_qlora.py
+│   │   ├── qwen25/              # Qwen2.5 model scripts
+│   │   │   ├── main_qwen25_fmft.py
+│   │   │   ├── main_qwen25_ia3.py
+│   │   │   ├── main_qwen25_lora.py
+│   │   │   └── main_qwen25_qlora.py
 │   │   └── qwen25-0.5b-instruct/ # Qwen2.5-0.5B model scripts
 │   │       ├── main_qwen25_0.5b_fmft.py
 │   │       ├── main_qwen25_0.5b_ia3.py
 │   │       ├── main_qwen25_0.5b_lora.py
 │   │       └── main_qwen25_0.5b_qlora.py
-│   └── utils/                   # Utility modules
-│       ├── constants.py         # Configuration constants
-│       └── helper.py            # Helper functions
+│   ├── utils/                   # Utility modules
+│   │   ├── constants.py         # Configuration constants
+│   │   └── helper.py            # Helper functions
+│   ├── tests/                   # Test files
+│   │   ├── download_model.py
+│   │   └── test_model.py
+│   ├── icl_inference.py         # In-Context Learning inference script
+│   ├── manual_upload_to_huggingface.py
+│   └── re_eval_model.py         # Model re-evaluation script
+├── config/                      # Configuration files
 ├── data/                        # Dataset and analysis notebooks
+│   ├── metrics.ipynb
+│   ├── rcg_eda.ipynb
+│   ├── Code-Revision-After-Review/
+│   ├── Code-Revision-Before-Review/
+│   ├── Comment_Generation/
+│   └── Review-Comment-Generation/
 ├── documents/                   # Research papers and documentation
-├── tests/                       # Test files
-└── README.md                    # This file
+├── run_training.sh              # Training script
+├── run_icl_batch.sh            # ICL batch execution script
+├── ICL_README.md               # ICL-specific documentation
+├── requirements.txt            # Python dependencies
+├── LICENSE                     # License file
+└── README.md                   # This file
 ```
 
 ## Models and Training Methods
@@ -68,7 +85,7 @@ This repository contains implementations for training various deep learning mode
 
 ## Usage
 
-### Quick Start with Training Script
+### Quick Start with Training Script (Examples)
 
 The easiest way to run training is using the provided script:
 
@@ -78,13 +95,14 @@ chmod +x run_training.sh
 
 # SWEEP mode - Run hyperparameter sweep (experiments 0-4)
 ./run_training.sh qwen15 ia3 sweep 0 4 0.2      # Qwen1.5 with IA3, subset=0.2
-./run_training.sh qwen25 lora sweep 0 4         # Qwen2.5 with LoRA, full dataset
 ./run_training.sh codet5 qlora sweep 0 2 0.5    # CodeT5 with QLoRA, subset=0.5
 
-# FIXED mode - Run with specific learning rate
-./run_training.sh qwen15 ia3 fixed 5e-5         # Qwen1.5 with IA3, lr=5e-5
-./run_training.sh qwen25 lora fixed 1e-4 0.3    # Qwen2.5 with LoRA, lr=1e-4, subset=0.3
-./run_training.sh codet5 fmft fixed 1e-5        # CodeT5 with FMFT, lr=1e-5
+# FIXED mode examples with tested learning rates:
+./run_training.sh codet5 fmft fixed 1e-4        # CodeT5 with FMFT
+./run_training.sh plbart lora fixed 1e-3        # PLBart with LoRA
+./run_training.sh qwen15 ia3 fixed 1e-5         # Qwen1.5 with IA3
+./run_training.sh qwen25 lora fixed 1e-5        # Qwen2.5 with LoRA
+./run_training.sh qwen25-0.5b fmft fixed 5e-5   # Qwen2.5-0.5B with FMFT
 ```
 
 ### Running In-Context Learning (ICL)
