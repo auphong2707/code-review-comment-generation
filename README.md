@@ -7,35 +7,34 @@ This repository contains implementations for training various deep learning mode
 ```
 ├── src/                          # Source code
 │   ├── models/                   # Model-specific training scripts
-│   │   ├── codet5/              # CodeT5-large model scripts
+│   │   ├── codet5/              # CodeT5-base model scripts
 │   │   │   ├── main_ct5_fmft.py
 │   │   │   ├── main_ct5_ia3.py
 │   │   │   ├── main_ct5_lora.py
-│   │   │   ├── main_ct5_ptuning.py
 │   │   │   └── main_ct5_qlora.py
-│   │   ├── plbart/              # PLBart-large model scripts
+│   │   ├── plbart/              # PLBart-base model scripts
 │   │   │   ├── main_plbart_fmft.py
 │   │   │   ├── main_plbart_ia3.py
 │   │   │   ├── main_plbart_lora.py
-│   │   │   ├── main_plbart_ptuning.py
 │   │   │   └── main_plbart_qlora.py
 │   │   ├── qwen15/              # Qwen1.5 model scripts
 │   │   │   ├── main_qwen15_fmft.py
 │   │   │   ├── main_qwen15_ia3.py
 │   │   │   ├── main_qwen15_lora.py
-│   │   │   ├── main_qwen15_ptuning.py
 │   │   │   └── main_qwen15_qlora.py
 │   │   └── qwen25/              # Qwen2.5 model scripts
 │   │       ├── main_qwen25_fmft.py
 │   │       ├── main_qwen25_ia3.py
 │   │       ├── main_qwen25_lora.py
-│   │       ├── main_qwen25_ptuning.py
 │   │       └── main_qwen25_qlora.py
+│   │   └── qwen25-0.5b-instruct/ # Qwen2.5-0.5B model scripts
+│   │       ├── main_qwen25_0.5b_fmft.py
+│   │       ├── main_qwen25_0.5b_ia3.py
+│   │       ├── main_qwen25_0.5b_lora.py
+│   │       └── main_qwen25_0.5b_qlora.py
 │   └── utils/                   # Utility modules
 │       ├── constants.py         # Configuration constants
 │       └── helper.py            # Helper functions
-├── config/                      # Configuration files
-│   └── ds_zero3_config.json    # DeepSpeed configuration
 ├── data/                        # Dataset and analysis notebooks
 ├── documents/                   # Research papers and documentation
 ├── tests/                       # Test files
@@ -45,25 +44,27 @@ This repository contains implementations for training various deep learning mode
 ## Models and Training Methods
 
 ### Supported Models
-- **CodeT5-large**: Salesforce/codet5-large
-- **PLBart-large**: uclanlp/plbart-large
-- **Qwen1.5**: Qwen/CodeQwen1.5-7B-Chat
-- **Qwen2.5**: Qwen/CodeQwen2.5-7B-Instruct
+- **CodeT5-base**: Salesforce/codet5-base
+- **PLBart-base**: uclanlp/plbart-base
+- **CodeQwen1.5-7B-Chat**: Qwen/CodeQwen1.5-7B-Chat
+- **Qwen2.5-Coder-7B-Instruct**: Qwen/Qwen2.5-Coder-7B-Instruct
+- **Qwen2.5-0.5B-Instruct**: Qwen/Qwen2.5-0.5B-Instruct
 
 ### Training Methods
 - **FMFT**: Full Model Fine-Tuning
 - **IA3**: (IA)³ - Infused Adapter by Inhibiting and Amplifying Inner Activations
 - **LoRA**: Low-Rank Adaptation
 - **QLoRA**: Quantized Low-Rank Adaptation
-- **P-tuning**: Prompt Tuning
+- **ICL**: In-Context Learning
 
 ### Method Availability by Model
-| Model | FMFT | IA3 | LoRA | QLoRA | P-tuning |
-|-------|------|-----|------|-------|----------|
-| CodeT5-large | ✅ | ✅ | ✅ | ✅ | ✅ |
-| PLBart-large | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Qwen1.5 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Qwen2.5 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Model | FMFT | IA3 | LoRA | QLoRA | ICL |
+|-------|------|-----|------|-------|-----|
+| CodeT5-base | ✅ | ✅ | ✅ | ✅ | ❌ |
+| PLBart-base | ✅ | ✅ | ✅ | ✅ | ❌ |
+| CodeQwen1.5-7B-Chat | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Qwen2.5-Coder-7B-Instruct | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Qwen2.5-0.5B-Instruct | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Usage
 
@@ -75,79 +76,47 @@ The easiest way to run training is using the provided script:
 # Make the script executable (first time only)
 chmod +x run_training.sh
 
-# Run training for different models and methods
-./run_training.sh qwen15 fmft     # Qwen1.5 with full fine-tuning
-./run_training.sh qwen25 lora     # Qwen2.5 with LoRA
-./run_training.sh codet5 ia3      # CodeT5 with IA3
-./run_training.sh codet5 lora     # CodeT5 with LoRA  
-./run_training.sh codet5 qlora    # CodeT5 with QLoRA
-./run_training.sh plbart ptuning  # PLBart with P-tuning
-./run_training.sh plbart lora     # PLBart with LoRA
-./run_training.sh plbart qlora    # PLBart with QLoRA
+# SWEEP mode - Run hyperparameter sweep (experiments 0-4)
+./run_training.sh qwen15 ia3 sweep 0 4 0.2      # Qwen1.5 with IA3, subset=0.2
+./run_training.sh qwen25 lora sweep 0 4         # Qwen2.5 with LoRA, full dataset
+./run_training.sh codet5 qlora sweep 0 2 0.5    # CodeT5 with QLoRA, subset=0.5
+
+# FIXED mode - Run with specific learning rate
+./run_training.sh qwen15 ia3 fixed 5e-5         # Qwen1.5 with IA3, lr=5e-5
+./run_training.sh qwen25 lora fixed 1e-4 0.3    # Qwen2.5 with LoRA, lr=1e-4, subset=0.3
+./run_training.sh codet5 fmft fixed 1e-5        # CodeT5 with FMFT, lr=1e-5
 ```
 
-### Manual Execution
+### Running In-Context Learning (ICL)
 
-### Running Full Model Fine-Tuning (FMFT)
-
-For Qwen models with DeepSpeed:
-```bash
-# Qwen1.5 FMFT
-deepspeed --num_gpus 8 src/models/qwen15/main_qwen15_fmft.py
-
-# Qwen2.5 FMFT
-deepspeed --num_gpus 8 src/models/qwen25/main_qwen25_fmft.py
-```
-
-### Running Other Training Methods
+For models that support ICL, you can run inference without fine-tuning:
 
 ```bash
-# LoRA training
-python src/models/qwen15/main_qwen15_lora.py
-python src/models/qwen25/main_qwen25_lora.py
+# Qwen2.5-Coder-7B-Instruct ICL with different numbers of examples
+python src/icl_inference.py --model_name qwen25 --num_examples 3 --selection_method random
+python src/icl_inference.py --model_name qwen25 --num_examples 5 --selection_method random
+python src/icl_inference.py --model_name qwen25 --num_examples 10 --selection_method random
 
-# IA3 training
-python src/models/qwen15/main_qwen15_ia3.py
-python src/models/qwen25/main_qwen25_ia3.py
+# Qwen2.5-0.5B-Instruct ICL with different numbers of examples
+python src/icl_inference.py --model_name qwen25-0.5b --num_examples 3 --selection_method random
+python src/icl_inference.py --model_name qwen25-0.5b --num_examples 5 --selection_method random
+python src/icl_inference.py --model_name qwen25-0.5b --num_examples 10 --selection_method random
 
-# P-tuning
-python src/models/qwen15/main_qwen15_ptuning.py
-python src/models/qwen25/main_qwen25_ptuning.py
-
-# QLoRA training
-python src/models/qwen15/main_qwen15_qlora.py
-python src/models/qwen25/main_qwen25_qlora.py
-```
-
-### Running CodeT5 and PLBart Models
-
-```bash
-# CodeT5 models
-python src/models/codet5/main_ct5_fmft.py
-python src/models/codet5/main_ct5_ia3.py
-python src/models/codet5/main_ct5_lora.py
-python src/models/codet5/main_ct5_ptuning.py
-python src/models/codet5/main_ct5_qlora.py
-
-# PLBart models
-python src/models/plbart/main_plbart_fmft.py
-python src/models/plbart/main_plbart_ia3.py
-python src/models/plbart/main_plbart_lora.py
-python src/models/plbart/main_plbart_ptuning.py
-python src/models/plbart/main_plbart_qlora.py
+# CodeQwen1.5-7B-Chat ICL with different numbers of examples
+python src/icl_inference.py --model_name qwen15 --num_examples 3 --selection_method random
+python src/icl_inference.py --model_name qwen15 --num_examples 5 --selection_method random
+python src/icl_inference.py --model_name qwen15 --num_examples 10 --selection_method random
 ```
 
 ## Configuration
 
-All model hyperparameters and training configurations are defined in `src/utils/constants.py`. 
-DeepSpeed configuration for distributed training is available in `config/ds_zero3_config.json`.
+All model hyperparameters and training configurations are defined in `src/utils/constants.py`.
 
 ## Requirements
 
 - Python 3.8+
 - PyTorch
 - Transformers
-- DeepSpeed
 - PEFT (Parameter-Efficient Fine-Tuning)
 - Datasets
 - Evaluate
@@ -166,54 +135,8 @@ export HUGGINGFACE_TOKEN="your_huggingface_token"
 Install the required dependencies:
 ```bash
 # Option 1: Install directly
-pip install torch transformers==4.47.0 datasets evaluate wandb huggingface-hub deepspeed peft
+pip install torch transformers==4.47.0 datasets evaluate wandb huggingface-hub peft
 
 # Option 2: Install from requirements file
 pip install -r requirements.txt
 ```
-
-## Quick Validation
-
-To verify that the refactored codebase is working correctly:
-
-```bash
-python validate_setup.py
-```
-
-This will check:
-- ✅ File structure integrity
-- ✅ Import path functionality  
-- ✅ Training script availability
-- ✅ Path setup in all scripts
-
-## Troubleshooting
-
-### Import Errors
-If you encounter import errors like `ModuleNotFoundError: No module named 'constants'`, this means the Python path is not set correctly. Each training script now includes automatic path setup, but if you still have issues:
-
-1. **Use the training script** (recommended):
-   ```bash
-   ./run_training.sh qwen15 fmft
-   ```
-
-2. **Set PYTHONPATH manually**:
-   ```bash
-   export PYTHONPATH="${PYTHONPATH}:$(pwd):$(pwd)/src"
-   python src/models/qwen15/main_qwen15_fmft.py
-   ```
-
-3. **Run from project root** and ensure you're in the correct directory structure.
-
-### Path Issues
-- Make sure you're running commands from the project root directory
-- Verify that the `src/utils/constants.py` and `src/utils/helper.py` files exist
-- Each training script now includes automatic path detection and setup
-
-## Project Structure Details
-
-- **`src/models/`**: Contains model-specific training scripts organized by model type
-- **`src/utils/`**: Shared utilities (constants, helper functions)
-- **`config/`**: Configuration files (DeepSpeed, etc.)
-- **`tests/`**: Test scripts and validation code
-- **`data/`**: Dataset files and analysis notebooks
-- **`documents/`**: Research papers and documentation
