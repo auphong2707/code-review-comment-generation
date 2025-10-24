@@ -3,7 +3,7 @@ from huggingface_hub import snapshot_download
 import os
 from pathlib import Path
 
-repo_id = "auphong2707/review-code-generation"
+repo_id = "your-huggingface-username/code-review-comment-generation"
 model_subdir = "code-summarization/plbart/experiment-3"
 local_dir = "./my_model/plbart-base/experiment-3"
 temp_dir = "./temp_hf_download"
