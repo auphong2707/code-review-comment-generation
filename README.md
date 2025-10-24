@@ -126,6 +126,18 @@ python src/icl_inference.py --model_name qwen15 --num_examples 5 --selection_met
 python src/icl_inference.py --model_name qwen15 --num_examples 10 --selection_method random
 ```
 
+## Dataset Information
+
+This project uses two main datasets for training and evaluation:
+
+### TransReview Dataset
+- **Source**: [Generated_Review_How_Far Repository](https://github.com/soarsmu/Generated_Review_How_Far/tree/main?tab=readme-ov-file)
+- **Download Link**: [Google Drive](https://drive.google.com/file/d/13W5zisw9jGDXHIczyh2D7DI5kLUYYWHn/view?usp=share_link)
+
+### CodeReviewer Dataset
+- **Source**: [Zenodo Repository](https://zenodo.org/records/6900648)
+- **Download Link**: [Comment_Generation.zip](https://zenodo.org/records/6900648/files/Comment_Generation.zip?download=1)
+
 ## Configuration
 
 All model hyperparameters and training configurations are defined in `src/utils/constants.py`.
