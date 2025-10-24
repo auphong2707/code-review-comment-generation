@@ -1,0 +1,118 @@
+"""
+This file contains all the constants used in the project.
+"""
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# [0. GENERAL CONSTANTS]
+# -----------------------------------------------------------------------------------
+RESULTS_DIR                 = "./results-cc/"
+LOGGING_STEPS               = 5
+SEED                        = 42
+
+DATASET_NAME                = "acra_by_ls_pt" # Can be: acra_by_ls_pt or trans_review
+HUGGINGFACE_DATASET_ID      = "your-huggingface-username/acra-by-ls-pt-dataset" # Update with your actual dataset ID
+TRAIN_DATA_DIR              = 'data/Comment_Generation/msg-train.jsonl'
+VAL_DATA_DIR                = 'data/Comment_Generation/msg-valid.jsonl'
+TEST_DATA_DIR               = 'data/Comment_Generation/msg-test.jsonl'
+
+INPUT_MAX_LENGTH            = 512
+OUTPUT_MAX_LENGTH           = 256
+OUTPUT_MIN_LENGTH           = 2
+NUM_BEAMS                   = 3
+DEEPSPEED_CFG               = "config/ds_zero3_config.json"
+
+NUM_WORKERS                 = 4
+
+WANDB_PROJECT                = "code-review-comment-generation"
+HUGGINGFACE_REPO_ID          = "your-huggingface-username/code-review-comment-generation" # Update with your actual repo ID
+
+LR = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+# -----------------------------------------------------------------------------------
+
+
+
+# [1. CODET5-BASE HYPERPARAMETERS]
+# -----------------------------------------------------------------------------------
+MODEL_CT5                  = "Salesforce/codet5-base"
+TOKENIZER_CT5              = "Salesforce/codet5-base"
+RESULTS_DIR_CT5            = RESULTS_DIR + "code-t5/"
+
+TRAIN_BATCH_SIZE_CT5       = 8
+EVAL_BATCH_SIZE_CT5        = 8
+NUM_TRAIN_EPOCHS_CT5       = 8
+WEIGHT_DECAY_CT5           = 0.01
+# -----------------------------------------------------------------------------------
+
+
+
+# [2. PLBART-BASE HYPERPARAMETERS]
+# -----------------------------------------------------------------------------------
+MODEL_PLBART               = "uclanlp/plbart-base"
+TOKENIZER_PLBART           = "uclanlp/plbart-base"
+RESULTS_DIR_PLBART         = RESULTS_DIR + "plbart/"
+
+TRAIN_BATCH_SIZE_PLBART    = 8
+EVAL_BATCH_SIZE_PLBART     = 8
+NUM_TRAIN_EPOCHS_PLBART    = 8
+WEIGHT_DECAY_PLBART        = 0.01
+# -----------------------------------------------------------------------------------
+
+
+
+# [3. QWEN CodeQwen-1.5-7B-Chat HYPERPARAMETERS]
+# -----------------------------------------------------------------------------------
+MODEL_QWEN15                = "Qwen/CodeQwen1.5-7B-Chat"
+TOKENIZER_QWEN15            = MODEL_QWEN15
+RESULTS_DIR_QWEN15          = RESULTS_DIR + "qwen15/"
+
+TRAIN_BATCH_SIZE_QWEN15     = 1
+EVAL_BATCH_SIZE_QWEN15      = 1
+NUM_TRAIN_EPOCHS_QWEN15     = 3
+WEIGHT_DECAY_QWEN15         = 0.01
+# -----------------------------------------------------------------------------------
+
+
+
+# [4. QWEN Qwen-2.5-Coder-7B-Instruct HYPERPARAMETERS]
+#-------------------------------------------------------------------------
+MODEL_QWEN25                = "Qwen/Qwen2.5-Coder-7B-Instruct"
+TOKENIZER_QWEN25            = MODEL_QWEN25
+RESULTS_DIR_QWEN25          = RESULTS_DIR + "qwen25/"
+
+TRAIN_BATCH_SIZE_QWEN25     = 1
+EVAL_BATCH_SIZE_QWEN25      = 1
+NUM_TRAIN_EPOCHS_QWEN25     = 3
+WEIGHT_DECAY_QWEN25         = 0.01
+#-------------------------------------------------------------------------
+
+
+
+# [5. QWEN Qwen-2.5-0.5B-Instruct HYPERPARAMETERS]
+#-------------------------------------------------------------------------
+MODEL_QWEN25_0_5B                = "Qwen/Qwen2.5-0.5B-Instruct"
+TOKENIZER_QWEN25_0_5B            = MODEL_QWEN25_0_5B
+RESULTS_DIR_QWEN25_0_5B          = RESULTS_DIR + "qwen25-0.5b-instruct/"
+
+TRAIN_BATCH_SIZE_QWEN25_0_5B     = 8
+EVAL_BATCH_SIZE_QWEN25_0_5B      = 8
+NUM_TRAIN_EPOCHS_QWEN25_0_5B     = 8
+WEIGHT_DECAY_QWEN25_0_5B         = 0.01
+#-------------------------------------------------------------------------
+
+
+
+# [6. PEFT HYPERPARAMETERS]
+#-------------------------------------------------------------------------
+NUM_VIRTUAL_TOKENS          = 100
+ENCODER_REPARAMETERIZATION_TYPE = "MLP"
+
+RANK_LORA                   = 16
+ALPHA_LORA                  = 16
+
+RANK_QLORA                  = 16
+ALPHA_QLORA                 = 16
+#-------------------------------------------------------------------------
