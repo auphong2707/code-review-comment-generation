@@ -178,3 +178,7 @@ cython_debug/
 
 # Results folder
 results/
+
+**assets**
+AGENTS.md
+**PROMPTS.md
