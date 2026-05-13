@@ -79,6 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-k", type=int, default=JudgeConfig.k)
     parser.add_argument("--judge-cache-path", default=None)
     parser.add_argument("--judge-local-files-only", action="store_true")
+    parser.add_argument("--judge-device", default=JudgeConfig.device,
+                        help="Judge device: cuda, cuda:N, cpu, or auto (default: cuda)")
+    parser.add_argument("--judge-batch-size", type=int, default=JudgeConfig.batch_size,
+                        help="Number of judge records to generate per batch")
     parser.add_argument("--judge-temperature", type=float, default=JudgeConfig.temperature)
     parser.add_argument("--judge-top-p", type=float, default=JudgeConfig.top_p)
     parser.add_argument("--judge-max-new-tokens", type=int, default=JudgeConfig.max_new_tokens)
@@ -102,6 +106,8 @@ def config_from_args(args) -> JudgeConfig:
         do_sample=not args.judge_no_sample,
         cache_path=args.judge_cache_path,
         local_files_only=args.judge_local_files_only,
+        device=args.judge_device,
+        batch_size=args.judge_batch_size,
         code_column=args.code_column,
         prediction_column=args.prediction_column,
         reference_column=args.reference_column,

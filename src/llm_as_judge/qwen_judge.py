@@ -68,6 +68,9 @@ class MockJudge:
             penalty_lambda=self.config.penalty_lambda,
         )
 
+    def score_records(self, records: Iterable[Mapping[str, Any]]) -> list[dict]:
+        return [self.score_record(record) for record in records]
+
 
 class QwenJudge:
     def __init__(self, config: JudgeConfig):
@@ -76,6 +79,31 @@ class QwenJudge:
         self.model = None
         self.tokenizer = None
         self._torch = None
+        self._target_device = None
+
+    def _device_map(self, torch):
+        if self.config.device == "auto":
+            return "auto"
+        if self.config.device == "cpu":
+            self._target_device = torch.device("cpu")
+            return {"": "cpu"}
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "LLM-as-Judge is configured to run on CUDA, but CUDA is not available. "
+                "Use a GPU runtime or set device='cpu' explicitly for debugging."
+            )
+
+        target = "cuda:0" if self.config.device == "cuda" else self.config.device
+        if ":" in target:
+            device_index = int(target.split(":", 1)[1])
+            if device_index >= torch.cuda.device_count():
+                raise RuntimeError(
+                    f"LLM-as-Judge requested {target}, but only "
+                    f"{torch.cuda.device_count()} CUDA device(s) are visible."
+                )
+        self._target_device = torch.device(target)
+        return {"": target}
 
     def _load(self) -> None:
         if self.model is not None and self.tokenizer is not None:
@@ -89,13 +117,15 @@ class QwenJudge:
             trust_remote_code=True,
             local_files_only=self.config.local_files_only,
         )
+        self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        device_map = self._device_map(torch)
         self.model = AutoModelForCausalLM.from_pretrained(
             self.config.model_path,
             torch_dtype="auto",
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=True,
             local_files_only=self.config.local_files_only,
         )
@@ -103,6 +133,8 @@ class QwenJudge:
         self._torch = torch
 
     def _device(self):
+        if self._target_device is not None:
+            return self._target_device
         try:
             return self.model.device
         except AttributeError:
@@ -117,16 +149,20 @@ class QwenJudge:
             )
         return "\n\n".join(f"{item['role']}: {item['content']}" for item in messages) + "\nassistant:"
 
-    def _generate(self, record: Mapping[str, Any]) -> str:
+    def _generate_batch(self, records: list[Mapping[str, Any]]) -> list[str]:
         self._load()
-        messages = build_messages(
-            record["code_or_diff"],
-            record["prediction"],
-            record["reference"],
-            self.config.max_code_chars,
-        )
-        prompt = self._render_prompt(messages)
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self._device())
+        prompts = [
+            self._render_prompt(
+                build_messages(
+                    record["code_or_diff"],
+                    record["prediction"],
+                    record["reference"],
+                    self.config.max_code_chars,
+                )
+            )
+            for record in records
+        ]
+        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self._device())
         input_length = inputs["input_ids"].shape[1]
 
         kwargs = {
@@ -142,48 +178,73 @@ class QwenJudge:
         with self._torch.inference_mode():
             generated = self.model.generate(**inputs, **kwargs)
 
-        generated = generated[0][input_length:]
-        return self.tokenizer.decode(generated, skip_special_tokens=True).strip()
+        outputs = []
+        for row in generated:
+            output_ids = row[input_length:]
+            outputs.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
+        return outputs
+
+    def _generate(self, record: Mapping[str, Any]) -> str:
+        return self._generate_batch([record])[0]
 
     def score_record(self, record: Mapping[str, Any]) -> dict:
-        normalized = normalize_record(record, self.config)
-        run_scores = []
-        parse_errors = 0
+        return self.score_records([record])[0]
 
+    def score_records(self, records: Iterable[Mapping[str, Any]]) -> list[dict]:
+        normalized_records = [normalize_record(record, self.config) for record in records]
+        run_scores = [[] for _ in normalized_records]
+        parse_errors = [0 for _ in normalized_records]
+
+        if not normalized_records:
+            return []
+
+        record_indices = list(range(len(normalized_records)))
         for run_index in range(self.config.k):
-            key = make_cache_key(normalized, self.config, run_index)
-            cached = self.cache.get(key)
-            if cached and cached.get("ok"):
-                run_scores.append(cached["run_score"])
-                continue
+            uncached = []
+            for record_index in record_indices:
+                normalized = normalized_records[record_index]
+                key = make_cache_key(normalized, self.config, run_index)
+                cached = self.cache.get(key)
+                if cached and cached.get("ok"):
+                    run_scores[record_index].append(cached["run_score"])
+                else:
+                    uncached.append((record_index, key, normalized))
 
-            try:
-                raw_output = self._generate(normalized)
-                component_scores = parse_judge_output(raw_output)
-                run_score = score_components(component_scores)
-            except ValueError:
-                parse_errors += 1
-                continue
+            for start in range(0, len(uncached), self.config.batch_size):
+                batch = uncached[start:start + self.config.batch_size]
+                batch_records = [item[2] for item in batch]
+                raw_outputs = self._generate_batch(batch_records)
 
-            self.cache.set(
-                key,
-                {
-                    "ok": True,
-                    "run_score": run_score,
-                    "component_scores": component_scores,
-                    "raw_output": raw_output,
-                },
+                for (record_index, key, _), raw_output in zip(batch, raw_outputs):
+                    try:
+                        component_scores = parse_judge_output(raw_output)
+                        run_score = score_components(component_scores)
+                    except ValueError:
+                        parse_errors[record_index] += 1
+                        continue
+
+                    self.cache.set(
+                        key,
+                        {
+                            "ok": True,
+                            "run_score": run_score,
+                            "component_scores": component_scores,
+                            "raw_output": raw_output,
+                        },
+                    )
+                    run_scores[record_index].append(run_score)
+
+        return [
+            aggregate_scores(
+                scores,
+                k=self.config.k,
+                parse_errors=parse_errors[index],
+                model_path=self.config.model_path,
+                prompt_version=self.config.prompt_version,
+                penalty_lambda=self.config.penalty_lambda,
             )
-            run_scores.append(run_score)
-
-        return aggregate_scores(
-            run_scores,
-            k=self.config.k,
-            parse_errors=parse_errors,
-            model_path=self.config.model_path,
-            prompt_version=self.config.prompt_version,
-            penalty_lambda=self.config.penalty_lambda,
-        )
+            for index, scores in enumerate(run_scores)
+        ]
 
 
 def score_record(record: Mapping[str, Any], config: JudgeConfig) -> dict:
@@ -193,4 +254,4 @@ def score_record(record: Mapping[str, Any], config: JudgeConfig) -> dict:
 
 def score_records(records: Iterable[Mapping[str, Any]], config: JudgeConfig) -> list[dict]:
     judge = MockJudge(config) if config.mock else QwenJudge(config)
-    return [judge.score_record(record) for record in records]
+    return judge.score_records(records)

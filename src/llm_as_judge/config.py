@@ -18,6 +18,8 @@ class JudgeConfig:
     prompt_version: str = DEFAULT_PROMPT_VERSION
     cache_path: Optional[str] = None
     local_files_only: bool = False
+    device: str = "cuda"
+    batch_size: int = 1
     max_code_chars: int = 12000
     code_column: Optional[str] = None
     prediction_column: Optional[str] = None
@@ -35,5 +37,9 @@ class JudgeConfig:
             raise ValueError("top_p must be in (0, 1]")
         if self.max_code_chars < 1:
             raise ValueError("max_code_chars must be at least 1")
+        if self.batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        if self.device != "auto" and self.device != "cpu" and not self.device.startswith("cuda"):
+            raise ValueError("device must be 'cuda', 'cuda:N', 'cpu', or 'auto'")
         if self.temperature == 0.0 and self.do_sample:
             object.__setattr__(self, "do_sample", False)
