@@ -20,7 +20,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.llm_as_judge import JudgeConfig
+from src.llm_as_judge.integration import failed_judge_result
 from src.llm_as_judge.qwen_judge import MockJudge, QwenJudge
+from src.llm_as_judge.scorer import JUDGE_COLUMNS
 
 
 DEFAULT_JUDGE_MODEL = "assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct"
@@ -31,19 +33,6 @@ JOB_GROUPS = (
     "code-reviewer-finetuned",
     "trans-review-icl",
     "code-reviewer-icl",
-)
-JUDGE_COLUMNS = (
-    "qwen_judge_score",
-    "qwen_judge_mean",
-    "qwen_judge_median",
-    "qwen_judge_std",
-    "qwen_judge_agreement",
-    "qwen_judge_norm",
-    "qwen_judge_k",
-    "qwen_judge_valid_runs",
-    "qwen_judge_parse_errors",
-    "qwen_judge_model",
-    "qwen_judge_prompt_version",
 )
 LOGGER = logging.getLogger("llm_judge_tables")
 
@@ -290,22 +279,6 @@ def build_inputs(
     write_jsonl(manifest_path, manifest_rows)
     LOGGER.info("Wrote manifest to %s", manifest_path)
     return manifest_rows
-
-
-def failed_judge_result(config: JudgeConfig) -> dict:
-    return {
-        "qwen_judge_score": math.nan,
-        "qwen_judge_mean": math.nan,
-        "qwen_judge_median": math.nan,
-        "qwen_judge_std": math.nan,
-        "qwen_judge_agreement": math.nan,
-        "qwen_judge_norm": math.nan,
-        "qwen_judge_k": config.k,
-        "qwen_judge_valid_runs": 0,
-        "qwen_judge_parse_errors": config.k,
-        "qwen_judge_model": config.model_path,
-        "qwen_judge_prompt_version": config.prompt_version,
-    }
 
 
 def score_manifest(manifest_rows: Iterable[Mapping], config: JudgeConfig) -> None:

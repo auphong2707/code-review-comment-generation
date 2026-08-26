@@ -11,6 +11,13 @@ CODE_COLUMNS = ("code_or_diff", "code", "patch", "diff", "source", "input", "fun
 PREDICTION_COLUMNS = ("prediction", "pred", "generated_review", "generated_comment", "output")
 REFERENCE_COLUMNS = ("reference", "label", "target", "ground_truth", "review", "msg", "docstring")
 
+MOCK_RAW_OUTPUT = '{"c":4,"g":4,"a":4,"s":4,"q":4}'
+REPAIR_INSTRUCTION = (
+    "Your previous output was not the required compact JSON. "
+    'Respond with exactly {"c":<1-5>,"g":<1-5>,"a":<1-5>,"s":<1-5>,"q":<1-5>} '
+    "using integer values from 1 to 5 and no other text."
+)
+
 
 def _to_text(value: Any) -> str:
     if value is None:
@@ -58,8 +65,9 @@ class MockJudge:
 
     def score_record(self, record: Mapping[str, Any]) -> dict:
         normalize_record(record, self.config)
-        score = score_components({"c": 4, "g": 4, "a": 4, "s": 4, "q": 4})
-        return aggregate_scores(
+        components = {"c": 4, "g": 4, "a": 4, "s": 4, "q": 4}
+        score = score_components(components)
+        result = aggregate_scores(
             [score for _ in range(self.config.k)],
             k=self.config.k,
             parse_errors=0,
@@ -67,6 +75,10 @@ class MockJudge:
             prompt_version=self.config.prompt_version,
             penalty_lambda=self.config.penalty_lambda,
         )
+        if self.config.emit_debug_columns:
+            result["qwen_judge_raw_outputs"] = [MOCK_RAW_OUTPUT] * self.config.k
+            result["qwen_judge_component_scores"] = [dict(components) for _ in range(self.config.k)]
+        return result
 
     def score_records(self, records: Iterable[Mapping[str, Any]]) -> list[dict]:
         return [self.score_record(record) for record in records]
@@ -149,6 +161,29 @@ class QwenJudge:
             )
         return "\n\n".join(f"{item['role']}: {item['content']}" for item in messages) + "\nassistant:"
 
+    def _generate_from_prompts(self, prompts: list[str], *, deterministic: bool = False) -> list[str]:
+        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self._device())
+        input_length = inputs["input_ids"].shape[1]
+
+        kwargs = {
+            "max_new_tokens": self.config.max_new_tokens,
+            "do_sample": False if deterministic else self.config.do_sample,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        if not deterministic and self.config.do_sample:
+            kwargs["temperature"] = self.config.temperature
+            kwargs["top_p"] = self.config.top_p
+
+        with self._torch.inference_mode():
+            generated = self.model.generate(**inputs, **kwargs)
+
+        outputs = []
+        for row in generated:
+            output_ids = row[input_length:]
+            outputs.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
+        return outputs
+
     def _generate_batch(self, records: list[Mapping[str, Any]]) -> list[str]:
         self._load()
         prompts = [
@@ -162,27 +197,25 @@ class QwenJudge:
             )
             for record in records
         ]
-        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self._device())
-        input_length = inputs["input_ids"].shape[1]
+        return self._generate_from_prompts(prompts)
 
-        kwargs = {
-            "max_new_tokens": self.config.max_new_tokens,
-            "do_sample": self.config.do_sample,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-        }
-        if self.config.do_sample:
-            kwargs["temperature"] = self.config.temperature
-            kwargs["top_p"] = self.config.top_p
-
-        with self._torch.inference_mode():
-            generated = self.model.generate(**inputs, **kwargs)
-
-        outputs = []
-        for row in generated:
-            output_ids = row[input_length:]
-            outputs.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
-        return outputs
+    def _generate_repair_batch(self, items: list[tuple[Mapping[str, Any], str]]) -> list[str]:
+        """One deterministic re-prompt per parse failure (spec: repair retry)."""
+        self._load()
+        prompts = []
+        for record, previous_output in items:
+            messages = list(
+                build_messages(
+                    record["code_or_diff"],
+                    record["prediction"],
+                    record["reference"],
+                    self.config.max_code_chars,
+                )
+            )
+            messages.append({"role": "assistant", "content": previous_output})
+            messages.append({"role": "user", "content": REPAIR_INSTRUCTION})
+            prompts.append(self._render_prompt(messages))
+        return self._generate_from_prompts(prompts, deterministic=True)
 
     def _generate(self, record: Mapping[str, Any]) -> str:
         return self._generate_batch([record])[0]
@@ -194,9 +227,24 @@ class QwenJudge:
         normalized_records = [normalize_record(record, self.config) for record in records]
         run_scores = [[] for _ in normalized_records]
         parse_errors = [0 for _ in normalized_records]
+        raw_history = [[] for _ in normalized_records]
+        component_history = [[] for _ in normalized_records]
 
         if not normalized_records:
             return []
+
+        def accept(record_index, key, raw_output, component_scores, run_score):
+            self.cache.set(
+                key,
+                {
+                    "ok": True,
+                    "run_score": run_score,
+                    "component_scores": component_scores,
+                    "raw_output": raw_output,
+                },
+            )
+            run_scores[record_index].append(run_score)
+            component_history[record_index].append(component_scores)
 
         record_indices = list(range(len(normalized_records)))
         for run_index in range(self.config.k):
@@ -207,6 +255,8 @@ class QwenJudge:
                 cached = self.cache.get(key)
                 if cached and cached.get("ok"):
                     run_scores[record_index].append(cached["run_score"])
+                    raw_history[record_index].append(cached.get("raw_output"))
+                    component_history[record_index].append(cached.get("component_scores"))
                 else:
                     uncached.append((record_index, key, normalized))
 
@@ -215,27 +265,39 @@ class QwenJudge:
                 batch_records = [item[2] for item in batch]
                 raw_outputs = self._generate_batch(batch_records)
 
-                for (record_index, key, _), raw_output in zip(batch, raw_outputs):
+                repair_items = []
+                for (record_index, key, normalized), raw_output in zip(batch, raw_outputs):
+                    raw_history[record_index].append(raw_output)
                     try:
                         component_scores = parse_judge_output(raw_output)
                         run_score = score_components(component_scores)
                     except ValueError:
-                        parse_errors[record_index] += 1
+                        if self.config.repair_retry:
+                            repair_items.append((record_index, key, normalized, raw_output))
+                        else:
+                            parse_errors[record_index] += 1
                         continue
 
-                    self.cache.set(
-                        key,
-                        {
-                            "ok": True,
-                            "run_score": run_score,
-                            "component_scores": component_scores,
-                            "raw_output": raw_output,
-                        },
-                    )
-                    run_scores[record_index].append(run_score)
+                    accept(record_index, key, raw_output, component_scores, run_score)
 
-        return [
-            aggregate_scores(
+                if repair_items:
+                    repaired_outputs = self._generate_repair_batch(
+                        [(normalized, raw) for _, _, normalized, raw in repair_items]
+                    )
+                    for (record_index, key, _, _), repaired_raw in zip(repair_items, repaired_outputs):
+                        raw_history[record_index].append(repaired_raw)
+                        try:
+                            component_scores = parse_judge_output(repaired_raw)
+                            run_score = score_components(component_scores)
+                        except ValueError:
+                            parse_errors[record_index] += 1
+                            continue
+
+                        accept(record_index, key, repaired_raw, component_scores, run_score)
+
+        results = []
+        for index, scores in enumerate(run_scores):
+            result = aggregate_scores(
                 scores,
                 k=self.config.k,
                 parse_errors=parse_errors[index],
@@ -243,8 +305,11 @@ class QwenJudge:
                 prompt_version=self.config.prompt_version,
                 penalty_lambda=self.config.penalty_lambda,
             )
-            for index, scores in enumerate(run_scores)
-        ]
+            if self.config.emit_debug_columns:
+                result["qwen_judge_raw_outputs"] = raw_history[index]
+                result["qwen_judge_component_scores"] = component_history[index]
+            results.append(result)
+        return results
 
 
 def score_record(record: Mapping[str, Any], config: JudgeConfig) -> dict:

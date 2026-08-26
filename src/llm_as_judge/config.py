@@ -25,6 +25,10 @@ class JudgeConfig:
     prediction_column: Optional[str] = None
     reference_column: Optional[str] = None
     mock: bool = False
+    # Flag-gated spec completions. Both default OFF: produced Tables 1-5
+    # predate them, and neither field enters make_cache_key.
+    repair_retry: bool = False
+    emit_debug_columns: bool = False
 
     def __post_init__(self):
         if self.k < 1:
