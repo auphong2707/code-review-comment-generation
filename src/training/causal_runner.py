@@ -32,6 +32,7 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         OUTPUT_MAX_LENGTH,
         OUTPUT_MIN_LENGTH,
         WANDB_PROJECT,
+        WANDB_DIR,
         is_placeholder_repo,
     )
     from src.utils.custom_modified_api import LLMCustomTrainer, TimeMemoryCallback
@@ -56,7 +57,8 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         wandb.login(key=os.getenv("WANDB_API_KEY"))
         huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
     os.makedirs(experiment_results_dir, exist_ok=True)
-    wandb.init(project=WANDB_PROJECT, name=experiment_name)
+    os.makedirs(WANDB_DIR, exist_ok=True)
+    wandb.init(project=WANDB_PROJECT, name=experiment_name, dir=WANDB_DIR)
 
     # ------------------------------------------------------------------
     # 2. Dataset & tokenizer

@@ -43,7 +43,7 @@ python -m src.icl_inference --model_name codet5 --num_examples 3 --max_samples 1
 
 ### Output Configuration
 - `--output_path`: Specific path to save results JSON file
-- `--results_dir`: Directory to save results (default: `./results/icl/`)
+- `--results_dir`: Directory to save results (default: `assets/results/icl/`)
 
 ### General
 - `--seed`: Random seed for reproducibility (default: 42)

@@ -1,4 +1,4 @@
-# python -m src.re_eval_model --model_directory ./results-cc/code-t5/codet5_fmft_official_0.0001 --model_name codet5 --model_method fmft
+# python -m src.re_eval_model --model_directory assets/results/code-t5/codet5_fmft_official_0.0001 --model_name codet5 --model_method fmft
 import sys
 from pathlib import Path
 

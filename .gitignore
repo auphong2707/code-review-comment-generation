@@ -173,13 +173,8 @@ cython_debug/
 # Json Lines file
 *.jsonl
 
-# Trained models
-/my_model/*
-
-# Results folder
-results/
-
-**assets**
+# All run artifacts (data, weights, results, logs, wandb, HF cache) live under assets/
+assets/
 AGENTS.md
 **PROMPTS.md
 
@@ -194,8 +189,7 @@ CLAUDE.local.md
 /plans/
 /scripts/ai/
 
-# Local results dir used by constants.py (RESULTS_DIR="./results-cc/")
+# Legacy output dirs (pre-assets layout) — kept so stale checkouts stay clean
+results/
 results-cc/
-
-# Weights & Biases run dirs
 wandb/

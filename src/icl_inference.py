@@ -620,7 +620,7 @@ def main():
     # Output arguments
     parser.add_argument("--output_path", type=str, default=None,
                        help="Path to save results JSON file")
-    parser.add_argument("--results_dir", type=str, default="./results/icl/",
+    parser.add_argument("--results_dir", type=str, default="assets/results/icl/",
                        help="Directory to save results (used if output_path not specified)")
     
     # General arguments

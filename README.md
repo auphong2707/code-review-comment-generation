@@ -27,7 +27,7 @@ This repository contains implementations for training various deep learning mode
 ├── tools/                        # Operational scripts (judge table updates, manual checks)
 ├── data/                         # Analysis notebooks
 │   └── rcg_eda.ipynb
-├── assets/                       # Datasets, checkpoints, judge model + results (not in git)
+├── assets/                       # Everything not in git: data/, models/, results/, logs/, wandb/, cache/
 ├── run_training.sh               # Training dispatch script
 ├── ICL_README.md                 # ICL-specific documentation
 ├── LLM_AS_JUDGE.md               # LLM-as-judge documentation

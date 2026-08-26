@@ -33,6 +33,12 @@ SUBSET_DEFAULT=1
 # Set Python path to include the project root
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# All run artifacts go under assets/ (gitignored): results, logs, wandb, HF cache
+export WANDB_DIR="${WANDB_DIR:-$(pwd)/assets/wandb}"
+export HF_HOME="${HF_HOME:-$(pwd)/assets/cache/huggingface}"
+LOG_DIR="$(pwd)/assets/logs"
+mkdir -p "$WANDB_DIR" "$HF_HOME" "$LOG_DIR"
+
 case "$MODEL" in
   "codet5"|"plbart"|"qwen15"|"qwen25"|"qwen25-0.5b") ;;
   *) echo "Invalid model: $MODEL"; exit 1 ;;
@@ -54,8 +60,10 @@ run_single() {
     CMD="$CMD --learning_rate \"$lr_val\""
   fi
   echo "CMD: $CMD"
-  eval $CMD
-  return $?
+  local log_file="$LOG_DIR/${MODEL}_${METHOD}_${MODE}_$(date +%Y%m%d_%H%M%S).log"
+  echo "LOG: $log_file"
+  eval $CMD 2>&1 | tee "$log_file"
+  return ${PIPESTATUS[0]}
 }
 
 run_experiment() {

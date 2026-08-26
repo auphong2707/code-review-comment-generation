@@ -9,15 +9,22 @@ load_dotenv()
 
 # [0. GENERAL CONSTANTS]
 # -----------------------------------------------------------------------------------
-RESULTS_DIR                 = "./results-cc/"
+# All run artifacts live under assets/ (gitignored): results, logs, wandb, HF cache.
+ASSETS_DIR                  = "assets/"
+DATA_DIR                    = ASSETS_DIR + "data/"
+MODELS_DIR                  = ASSETS_DIR + "models/"      # produced HPC artifacts (read-only)
+RESULTS_DIR                 = ASSETS_DIR + "results/"     # local training/ICL outputs
+LOGS_DIR                    = ASSETS_DIR + "logs/"        # run_training.sh console logs
+WANDB_DIR                   = ASSETS_DIR + "wandb/"       # wandb run dirs
+CACHE_DIR                   = ASSETS_DIR + "cache/"       # HF_HOME default
 LOGGING_STEPS               = 5
 SEED                        = 42
 
 DATASET_NAME                = "acra_by_ls_pt" # Can be: acra_by_ls_pt or trans_review
 HUGGINGFACE_DATASET_ID      = "your-huggingface-username/acra-by-ls-pt-dataset" # Update with your actual dataset ID
-TRAIN_DATA_DIR              = 'data/Comment_Generation/msg-train.jsonl'
-VAL_DATA_DIR                = 'data/Comment_Generation/msg-valid.jsonl'
-TEST_DATA_DIR               = 'data/Comment_Generation/msg-test.jsonl'
+TRAIN_DATA_DIR              = DATA_DIR + 'Code_Review/msg-train.jsonl'
+VAL_DATA_DIR                = DATA_DIR + 'Code_Review/msg-valid.jsonl'
+TEST_DATA_DIR               = DATA_DIR + 'Code_Review/msg-test.jsonl'
 
 INPUT_MAX_LENGTH            = 512
 OUTPUT_MAX_LENGTH           = 256
