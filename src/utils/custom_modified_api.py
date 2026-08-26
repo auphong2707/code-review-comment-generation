@@ -1,6 +1,13 @@
-import torch, time, wandb, evaluate, logging, warnings
+import torch, time, wandb, logging, warnings
 from transformers import TrainerCallback, Trainer, GenerationConfig
 from tqdm import tqdm
+
+from src.evaluation.metrics import (
+    as_eval_results,
+    compute_generation_metrics,
+    guard_empty,
+    preload_metrics,
+)
 
 class TimeMemoryCallback(TrainerCallback):
     def __init__(self):
@@ -79,13 +86,9 @@ class LLMCustomTrainer(Trainer):
         if self.tokenizer_gen is None:
             raise ValueError("ERROR: tokenizer cannot be None for LLMCustomTrainer!")
         
-        # Load metrics with error handling
+        # Load metrics with error handling (fail fast at trainer construction)
         try:
-            self.bleu_metric = evaluate.load("bleu")
-            self.exact_match_metric = evaluate.load("exact_match")
-            self.rouge_metric = evaluate.load("rouge")
-            self.bert_score_metric = evaluate.load("bertscore")
-            self.meteor_metric = evaluate.load("meteor")
+            preload_metrics()
         except Exception as e:
             raise RuntimeError(f"ERROR: Failed to load evaluation metrics: {e}")
         
@@ -208,7 +211,7 @@ class LLMCustomTrainer(Trainer):
                             pred_text = ""
                         
                         # Clean up
-                        pred_text = pred_text if pred_text else "<EMPTY>"
+                        pred_text = guard_empty(pred_text)
                         
                         if self.debug:
                             print(f"Input text: '{self.tokenizer_gen.decode(prompt_ids, skip_special_tokens=True)}'")
@@ -232,64 +235,13 @@ class LLMCustomTrainer(Trainer):
         if failed_samples > total_samples * 0.5:  # More than 50% failed
             raise RuntimeError(f"CRITICAL: {failed_samples}/{total_samples} samples failed! Check your data format.")
         
-        # Compute metrics
+        # Compute metrics (single shared implementation, frozen semantics)
         try:
-            bleu_score = self.bleu_metric.compute(
-                predictions=predictions,
-                references=[[ref] for ref in references]
-            )["bleu"]
+            metric_values = compute_generation_metrics(predictions, references)
         except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute BLEU: {e}")
-        
-        try:
-            exact_match_score = self.exact_match_metric.compute(
-                predictions=predictions,
-                references=references
-            )["exact_match"]
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute exact match: {e}")
-        
-        # Compute ROUGE score (multiple scores)
-        try:
-            rouge_score = self.rouge_metric.compute(
-                predictions=predictions,
-                references=references,
-                use_stemmer=True
-            )
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute ROUGE: {e}")
-        
-        # Compute BERTScore (multiple scores)
-        try:
-            bertscore = self.bert_score_metric.compute(
-                predictions=predictions,
-                references=references,
-                lang="en"
-            )
-            bertscore = {
-                "precision": sum(bertscore["precision"]) / len(bertscore["precision"]),
-                "recall": sum(bertscore["recall"]) / len(bertscore["recall"]),
-                "f1": sum(bertscore["f1"]) / len(bertscore["f1"])
-            }
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute BERTScore: {e}")
-        
-        # Compute METEOR score
-        try:
-            meteor_score = self.meteor_metric.compute(
-                predictions=predictions,
-                references=references
-            )["meteor"]
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute METEOR: {e}")
-        
-        logger.info(f"BLEU-4: {bleu_score:.4f}, Exact Match: {exact_match_score:.4f}")
-        logger.info(f"ROUGE-L: {rouge_score['rougeL']:.4f}, BERTScore-F1: {bertscore['f1']:.4f}, METEOR: {meteor_score:.4f}")
-        
-        return {
-            "eval_bleu_4": bleu_score,
-            "eval_exact_match": exact_match_score,
-            "eval_rouge": rouge_score,
-            "eval_bertscore": bertscore,
-            "eval_meteor": meteor_score
-        }
+            raise RuntimeError(f"ERROR: Failed to compute metrics: {e}")
+
+        logger.info(f"BLEU-4: {metric_values['bleu_4']:.4f}, Exact Match: {metric_values['exact_match']:.4f}")
+        logger.info(f"ROUGE-L: {metric_values['rouge']['rougeL']:.4f}, BERTScore-F1: {metric_values['bertscore']['f1']:.4f}, METEOR: {metric_values['meteor']:.4f}")
+
+        return as_eval_results(metric_values)

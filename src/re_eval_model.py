@@ -1,10 +1,16 @@
-# python src/re_eval_model.py --model_directory ./results-cc/code-t5/codet5_fmft_official_0.0001 --model_name codet5 --model_method fmft
-from utils.helper import set_seed
+# python -m src.re_eval_model --model_directory ./results-cc/code-t5/codet5_fmft_official_0.0001 --model_name codet5 --model_method fmft
+import sys
+from pathlib import Path
+
+# Keep direct-script invocation (python src/re_eval_model.py) working
+sys.path.insert(0, str(Path(__file__).absolute().parent.parent))
+
+from src.utils.helper import set_seed
 set_seed()
 
-from utils.helper import load_model_and_tokenizer, load_dataset_for_eval
-from utils.constants import *
-import evaluate
+from src.utils.helper import load_model_and_tokenizer, load_dataset_for_eval
+from src.utils.constants import *
+from src.evaluation.metrics import EMPTY_PLACEHOLDER, as_test_results, compute_generation_metrics
 import torch
 import json
 import os
@@ -157,13 +163,6 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
     # Evaluate the model on the test dataset
     print("Starting test set evaluation with text generation...")
     
-    # Load metrics
-    bleu_metric = evaluate.load("bleu")
-    exact_match_metric = evaluate.load("exact_match")
-    rouge_metric = evaluate.load("rouge")
-    bert_score_metric = evaluate.load("bertscore")
-    meteor_metric = evaluate.load("meteor")
-
     # Set model to evaluation mode
     model.eval()
     
@@ -239,7 +238,7 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
             # After decoding
             if len(generated_text.strip()) == 0:
                 print(f"WARNING: Empty generation at sample {i}")
-                generated_text = "<EMPTY>"  # Placeholder to avoid BLEU crash
+                generated_text = EMPTY_PLACEHOLDER  # Placeholder to avoid BLEU crash
             
             predictions.append(generated_text)
             references.append(reference_text)
@@ -250,62 +249,24 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
             print(f"  Reference: {reference_text}")
             print()
     
-    # Compute BLEU-4 score
-    bleu_score = bleu_metric.compute(
-        predictions=predictions,
-        references=[[ref] for ref in references]
-    )["bleu"]
-    
-    # Compute exact match using Hugging Face metric
-    exact_match_score = exact_match_metric.compute(
-        predictions=predictions,
-        references=references
-    )["exact_match"]
-
-    # Compute ROUGE score (multiple scores)
-    rouge_score = rouge_metric.compute(
-        predictions=predictions,
-        references=references,
-        use_stemmer=True
-    )
-
-    # Compute BERTScore (multiple scores)
-    bertscore = bert_score_metric.compute(
-        predictions=predictions,
-        references=references,
-        lang="en"
-    )
-    bertscore = {
-        "precision": sum(bertscore["precision"]) / len(bertscore["precision"]),
-        "recall": sum(bertscore["recall"]) / len(bertscore["recall"]),
-        "f1": sum(bertscore["f1"]) / len(bertscore["f1"])
-    }
-    
-    # Compute METEOR score
-    meteor_score = meteor_metric.compute(
-        predictions=predictions,
-        references=references
-    )["meteor"]
+    # Compute the frozen metric suite (single shared implementation)
+    metrics = compute_generation_metrics(predictions, references)
 
     # Print final results
-    
+
     print(f"Test Results:")
-    print(f"  BLEU-4: {bleu_score}")
-    print(f"  Exact Match: {exact_match_score}")
-    print(f"  ROUGE: {rouge_score}")
-    print(f"  BERTScore: {bertscore}")
-    print(f"  METEOR: {meteor_score}")
-    
+    print(f"  BLEU-4: {metrics['bleu_4']}")
+    print(f"  Exact Match: {metrics['exact_match']}")
+    print(f"  ROUGE: {metrics['rouge']}")
+    print(f"  BERTScore: {metrics['bertscore']}")
+    print(f"  METEOR: {metrics['meteor']}")
+
     # Prepare raw data
     raw_data = [{"prediction": pred, "reference": ref} for pred, ref in zip(predictions, references)]
-    
-    # Combine all results into one structure
+
+    # Combine all results into one structure (legacy test_* schema)
     complete_results = {
-        "test_bleu_4": bleu_score,
-        "test_exact_match": exact_match_score,
-        "test_rouge": rouge_score,
-        "test_bertscore": bertscore,
-        "test_meteor": meteor_score,
+        **as_test_results(metrics),
         "raw_data": raw_data
     }
     

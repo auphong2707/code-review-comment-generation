@@ -2,9 +2,6 @@
 # ------------------------------------------------------------------
 # In-Context Learning (ICL) Inference Script
 # ------------------------------------------------------------------
-from utils.helper import set_seed
-set_seed()
-
 import sys
 import os
 from pathlib import Path
@@ -15,15 +12,18 @@ from typing import List, Dict, Any
 
 import huggingface_hub
 
-# Add project root to Python path
+# Add project root to Python path (keeps `python src/icl_inference.py` working)
 current_file = Path(__file__).absolute()
 project_root = current_file.parent.parent
 sys.path.insert(0, str(project_root))
 
+from src.utils.helper import set_seed
+set_seed()
+
 from src.utils.constants import *
 from src.utils.helper import load_jsonl
+from src.evaluation.metrics import EMPTY_PLACEHOLDER, as_icl_results, compute_generation_metrics
 
-import evaluate
 import torch
 import warnings
 from tqdm import tqdm
@@ -657,7 +657,7 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
             # Handle empty generations
             if not generated_review.strip():
                 print(f"WARNING: Empty generation at sample {i}")
-                generated_review = "<EMPTY>"
+                generated_review = EMPTY_PLACEHOLDER
             
             predictions.append(generated_review)
             references.append(reference)
@@ -676,59 +676,17 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
             references.append(" ".join(test_sample["docstring_tokens"]))
             prompts.append("<ERROR>")
     
-    # Load evaluation metrics
-    print("Loading evaluation metrics...")
-    bleu_metric = evaluate.load("bleu")
-    exact_match_metric = evaluate.load("exact_match")
-    rouge_metric = evaluate.load("rouge")
-    bert_score_metric = evaluate.load("bertscore")
-    meteor_metric = evaluate.load("meteor")
-
-    # Compute BLEU score
+    # Compute the frozen metric suite (single shared implementation)
     print("Computing evaluation metrics...")
-    bleu_score = bleu_metric.compute(
-        predictions=predictions,
-        references=[[ref] for ref in references]
-    )["bleu"]
-    
-    exact_match_score = exact_match_metric.compute(
-        predictions=predictions,
-        references=references
-    )["exact_match"]
+    metric_values = compute_generation_metrics(predictions, references)
 
-    rouge_score = rouge_metric.compute(
-        predictions=predictions,
-        references=references,
-        use_stemmer=True
-    )
-
-    bertscore = bert_score_metric.compute(
-        predictions=predictions,
-        references=references,
-        lang="en"
-    )
-    bertscore = {
-        "precision": sum(bertscore["precision"]) / len(bertscore["precision"]),
-        "recall": sum(bertscore["recall"]) / len(bertscore["recall"]),
-        "f1": sum(bertscore["f1"]) / len(bertscore["f1"])
-    }
-    
-    meteor_score = meteor_metric.compute(
-        predictions=predictions,
-        references=references
-    )["meteor"]
-    
-    # Prepare results
+    # Prepare results (legacy ICL schema)
     results = {
         "model_name": model_name,
         "num_icl_examples": num_examples,
         "selection_method": selection_method,
         "num_test_samples": len(test_data),
-        "bleu_score": bleu_score,
-        "exact_match_score": exact_match_score,
-        "rouge_score": rouge_score,
-        "bertscore": bertscore,
-        "meteor_score": meteor_score,
+        **as_icl_results(metric_values),
         "predictions": predictions,
         "references": references,
         "prompts": prompts,
@@ -747,8 +705,8 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
     print(f"  Max Context Length: {get_max_context_length(model)}")
     print(f"  Context Truncations: {context_truncation_count}/{len(test_data)}")
     print(f"  Example Reductions: {example_reduction_count}/{len(test_data)}")
-    print(f"  BLEU-4: {bleu_score:.4f}")
-    print(f"  Exact Match: {exact_match_score:.4f}")
+    print(f"  BLEU-4: {metric_values['bleu_4']:.4f}")
+    print(f"  Exact Match: {metric_values['exact_match']:.4f}")
     
     return results
 
