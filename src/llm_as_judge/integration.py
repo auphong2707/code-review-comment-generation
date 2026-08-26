@@ -151,6 +151,12 @@ def judge_rows(rows, raw_samples, dataset_name, judge_config, args, judge=None):
     --judge-*-column overrides); raw_samples align positionally with rows."""
     judge = judge or make_judge(judge_config)
 
+    if len(raw_samples) != len(rows):
+        print(
+            f"WARNING: LLM-as-Judge alignment mismatch: {len(rows)} result rows vs "
+            f"{len(raw_samples)} raw samples; extra rows are judged with empty samples."
+        )
+
     pending = []
     for index, row in enumerate(rows):
         sample = raw_samples[index] if index < len(raw_samples) else {}

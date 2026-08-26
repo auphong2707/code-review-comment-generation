@@ -21,7 +21,7 @@ from src.utils.helper import set_seed
 set_seed()
 
 from src.utils.constants import *
-from src.utils.helper import load_jsonl
+from src.utils.helper import load_jsonl, extract_input_target
 from src.evaluation.metrics import EMPTY_PLACEHOLDER, as_icl_results, compute_generation_metrics
 
 import torch
@@ -418,7 +418,7 @@ def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_token
     input_length = inputs["input_ids"].shape[1]
     
     with torch.no_grad():
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             generated_ids = model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
@@ -440,7 +440,7 @@ def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_token
 def run_icl_inference(model_name: str, num_examples: int, selection_method: str = "random",
                      test_data_path: str = TEST_DATA_DIR, train_data_path: str = TRAIN_DATA_DIR,
                      output_path: str = None, max_samples: int = None, seed: int = SEED,
-                     max_context_utilization: bool = False) -> Dict[str, Any]:
+                     max_context_utilization: bool = False, verbose: bool = False) -> Dict[str, Any]:
     """Run ICL inference on test dataset.
     
     Args:
@@ -534,18 +534,23 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
             predictions.append(generated_review)
             references.append(reference)
 
-            # Print example details
-            print(f"\nExample {i+1}:")
-            print(f"  ICL Examples Used: {len(icl_examples)}/{original_num_examples}")
-            print(f"  Code: {test_code[:100]}...")
-            print(f"  Prompt: {prompt[:200]}...")
-            print(f"  Generated: {generated_review}")
-            print(f"  Reference: {reference}")
-                
+            # Print example details only when asked (thousands of lines on full runs)
+            if verbose:
+                print(f"\nExample {i+1}:")
+                print(f"  ICL Examples Used: {len(icl_examples)}/{original_num_examples}")
+                print(f"  Code: {test_code[:100]}...")
+                print(f"  Prompt: {prompt[:200]}...")
+                print(f"  Generated: {generated_review}")
+                print(f"  Reference: {reference}")
+
         except Exception as e:
             print(f"Error processing sample {i}: {e}")
             predictions.append("<ERROR>")
-            references.append(" ".join(test_sample["docstring_tokens"]))
+            try:
+                _, error_reference = extract_input_target(test_sample, DATASET_NAME)
+            except Exception:
+                error_reference = ""
+            references.append(error_reference)
             prompts.append("<ERROR>")
     
     # Compute the frozen metric suite (single shared implementation)
@@ -584,6 +589,10 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
 
 
 def main():
+    # The prompt builders and example selectors read the module-level
+    # DATASET_NAME (star-imported default); main() rebinds it from the CLI.
+    global DATASET_NAME
+
     parser = argparse.ArgumentParser(description="Run In-Context Learning (ICL) inference for code review generation")
     
     # Model arguments
@@ -601,10 +610,10 @@ def main():
                        help="Enable aggressive context length maximization with warnings")
     
     # Data arguments
-    parser.add_argument("--test_data_path", type=str, default=TEST_DATA_DIR,
-                       help="Path to test dataset JSONL file")
-    parser.add_argument("--train_data_path", type=str, default=TRAIN_DATA_DIR,
-                       help="Path to training dataset JSONL file")
+    parser.add_argument("--test_data_path", type=str, default=None,
+                       help="Path to test dataset JSONL file (default: from the --dataset registry)")
+    parser.add_argument("--train_data_path", type=str, default=None,
+                       help="Path to training dataset JSONL file (default: from the --dataset registry)")
     parser.add_argument("--max_samples", type=int, default=None,
                        help="Maximum number of test samples to process")
     
@@ -617,16 +626,33 @@ def main():
     # General arguments
     parser.add_argument("--seed", type=int, default=SEED,
                        help="Random seed for reproducibility")
+    parser.add_argument("--dataset", type=str, default=DATASET_NAME,
+                       choices=sorted(DATASET_CONFIGS),
+                       help="Dataset the test/train files belong to (default: constants.DATASET_NAME)")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Print per-sample prompts and generations")
+    parser.add_argument("--upload", action="store_true",
+                       help="Upload the results directory to the Hugging Face Hub after the run")
     add_judge_arguments(parser)
-    
+
     args = parser.parse_args()
     judge_config = build_judge_config(args) if args.llm_judge else None
-    
+
+    DATASET_NAME = args.dataset
+
+    # Resolve default data paths from the dataset registry (identical to the
+    # legacy TRAIN/TEST_DATA_DIR constants for the default dataset)
+    dataset_cfg = get_dataset_config(args.dataset)
+    if args.test_data_path is None:
+        args.test_data_path = str(dataset_cfg["data_files"]["test"])
+    if args.train_data_path is None:
+        args.train_data_path = str(dataset_cfg["data_files"]["train"])
+
     # Generate output path if not provided
     if args.output_path is None:
         filename = f"{args.model_name}_icl_{args.num_examples}ex_{args.selection_method}.json"
         args.output_path = os.path.join(args.results_dir, filename)
-    
+
     # Run ICL inference
     results = run_icl_inference(
         model_name=args.model_name,
@@ -637,7 +663,8 @@ def main():
         output_path=args.output_path,
         max_samples=args.max_samples,
         seed=args.seed,
-        max_context_utilization=args.max_context_utilization
+        max_context_utilization=args.max_context_utilization,
+        verbose=args.verbose
     )
     
     if judge_config is None:
@@ -674,15 +701,19 @@ def main():
         save_json_result(args.output_path, results)
         print(f"Judged results saved to: {args.output_path}")
     
-    # Upload to Hugging Face Hub
-    huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
-    
-    api = huggingface_hub.HfApi()
-    api.upload_large_folder(
-        folder_path=os.path.dirname(args.output_path),
-        repo_id=HUGGINGFACE_REPO_ID,
-        repo_type="model"
-    )
+    # Upload to Hugging Face Hub (opt-in; was unconditional before)
+    if args.upload:
+        if is_placeholder_repo(HUGGINGFACE_REPO_ID):
+            print(f"WARNING: HUGGINGFACE_REPO_ID is a placeholder ({HUGGINGFACE_REPO_ID}); skipping upload.")
+        else:
+            huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
+
+            api = huggingface_hub.HfApi()
+            api.upload_large_folder(
+                folder_path=os.path.dirname(args.output_path),
+                repo_id=HUGGINGFACE_REPO_ID,
+                repo_type="model"
+            )
 
     print("ICL inference completed successfully!")
 

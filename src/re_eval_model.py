@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).absolute().parent.parent))
 from src.utils.helper import set_seed
 set_seed()
 
-from src.utils.helper import load_model_and_tokenizer, load_dataset_for_eval
+from src.utils.helper import load_model_and_tokenizer, load_dataset_for_eval, normalize_model_name
 from src.utils.constants import *
 from src.evaluation.metrics import EMPTY_PLACEHOLDER, as_test_results, compute_generation_metrics
 import torch
@@ -30,12 +30,15 @@ from src.llm_as_judge.integration import (
 
 
 def main(model_directory, model_name, model_method, test_dataset_directory,
-         judge_config=None, judge_args=None):
+         judge_config=None, judge_args=None, dataset_name=None, verbose=False):
+    dataset_name = dataset_name or DATASET_NAME
+    model_name = normalize_model_name(model_name)
+
     # Load the model and tokenizer
     model, tokenizer = load_model_and_tokenizer(model_directory, model_name, model_method)
 
     # Load the test dataset
-    test_dataset = load_dataset_for_eval(test_dataset_directory, model_name, tokenizer)
+    test_dataset = load_dataset_for_eval(test_dataset_directory, model_name, tokenizer, dataset_name=dataset_name)
 
     # Evaluate the model on the test dataset
     print("Starting test set evaluation with text generation...")
@@ -59,7 +62,7 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
                 input_length = len(batch['input_ids'])
 
                 # Generate text
-                with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
                     generated_ids = model.generate(
                         input_ids,
                         max_new_tokens=OUTPUT_MAX_LENGTH,
@@ -72,10 +75,11 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
                 
                 # Extract only the generated part (remove input)
                 generated_ids = generated_ids[0][input_length:]
-                
+
                 # Debugging line
-                print(f"Generated IDs: {generated_ids}")
-                
+                if verbose:
+                    print(f"Generated IDs: {generated_ids}")
+
                 # Decode generated text
                 generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
                 
@@ -91,7 +95,7 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
             
             else:  # For seq2seq models (CodeT5, PLBART)
                 # Generate text
-                with torch.cuda.amp.autocast():
+                with torch.autocast("cuda"):
                     generated_ids = model.generate(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -119,12 +123,13 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
             
             predictions.append(generated_text)
             references.append(reference_text)
-            
-            # Print first few examples
-            print(f"Example {i+1}:")
-            print(f"  Generated: {generated_text}")
-            print(f"  Reference: {reference_text}")
-            print()
+
+            # Print examples only when asked (thousands of lines on full runs)
+            if verbose:
+                print(f"Example {i+1}:")
+                print(f"  Generated: {generated_text}")
+                print(f"  Reference: {reference_text}")
+                print()
     
     # Compute the frozen metric suite (single shared implementation)
     metrics = compute_generation_metrics(predictions, references)
@@ -161,13 +166,13 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
     if judge_args.judge_output_path:
         save_json_result(results_file, complete_results)
         print(f"Unjudged results saved to: {results_file}")
-        append_judge_results(raw_data, test_dataset_directory, DATASET_NAME, judge_config, judge_args)
+        append_judge_results(raw_data, test_dataset_directory, dataset_name, judge_config, judge_args)
         save_json_result(judge_args.judge_output_path, complete_results)
         print(f"Judged results saved to: {judge_args.judge_output_path}")
         return complete_results
 
     # Save everything to one JSON file
-    append_judge_results(raw_data, test_dataset_directory, DATASET_NAME, judge_config, judge_args)
+    append_judge_results(raw_data, test_dataset_directory, dataset_name, judge_config, judge_args)
     save_json_result(results_file, complete_results)
 
     print(f"Judged results saved to: {results_file}")
@@ -181,19 +186,29 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate trained models on test dataset')
     parser.add_argument('--model_directory', type=str, required=True,
                        help='Directory containing the trained model files')
-    parser.add_argument('--model_name', type=str, required=True, 
-                       choices=['codet5', 'plbart', 'qwen15', 'qwen25', 'qwen25-0.5b-instruct'],
+    parser.add_argument('--model_name', type=str, required=True,
+                       choices=['codet5', 'plbart', 'qwen15', 'qwen25', 'qwen25-0.5b-instruct', 'qwen25-0.5b'],
                        help='Name of the model architecture')
     parser.add_argument('--model_method', type=str, required=True,
                        choices=['fmft', 'lora', 'qlora', 'ia3'],
                        help='Training method used for the model')
-    parser.add_argument('--test_dataset_directory', type=str, default=TEST_DATA_DIR,
-                       help='Path to test dataset JSONL file')
+    parser.add_argument('--test_dataset_directory', type=str, default=None,
+                       help='Path to test dataset JSONL file (default: from the --dataset registry)')
+    parser.add_argument('--dataset', type=str, default=DATASET_NAME,
+                       choices=sorted(DATASET_CONFIGS),
+                       help='Dataset the test file belongs to (default: constants.DATASET_NAME)')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Print per-sample generations during evaluation')
     add_judge_arguments(parser)
-    
+
     args = parser.parse_args()
     judge_config = build_judge_config(args) if args.llm_judge else None
-    
+
+    # Resolve the default test path from the dataset registry (identical to
+    # the legacy TEST_DATA_DIR constant for the default dataset)
+    if args.test_dataset_directory is None:
+        args.test_dataset_directory = str(get_dataset_config(args.dataset)["data_files"]["test"])
+
     # Run evaluation
     results = main(
         model_directory=args.model_directory,
@@ -201,7 +216,9 @@ if __name__ == "__main__":
         model_method=args.model_method,
         test_dataset_directory=args.test_dataset_directory,
         judge_config=judge_config,
-        judge_args=args if args.llm_judge else None
+        judge_args=args if args.llm_judge else None,
+        dataset_name=args.dataset,
+        verbose=args.verbose
     )
     
     print("Evaluation completed successfully!")

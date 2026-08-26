@@ -182,6 +182,8 @@ def test_evaluation_scripts_import_with_judge_disabled(monkeypatch):
     helper_module.load_model_and_tokenizer = lambda *args, **kwargs: None
     helper_module.load_dataset_for_eval = lambda *args, **kwargs: []
     helper_module.load_jsonl = lambda *args, **kwargs: []
+    helper_module.extract_input_target = lambda *args, **kwargs: ("", "")
+    helper_module.normalize_model_name = lambda name: name
 
     constants_module = types.ModuleType("utils.constants")
     constants_module.TEST_DATA_DIR = "test.jsonl"

@@ -116,3 +116,49 @@ ALPHA_LORA                  = 16
 RANK_QLORA                  = 16
 ALPHA_QLORA                 = 16
 #-------------------------------------------------------------------------
+
+
+
+# [7. DATASET REGISTRY]
+#-------------------------------------------------------------------------
+# Per-dataset column/prompt/path configuration. DATASET_NAME above stays the
+# default; scripts accept --dataset to select one explicitly.
+DATASET_CONFIGS = {
+    "trans_review": {
+        "input_column": "code_tokens",
+        "target_column": "docstring_tokens",
+        "join_tokens": True,           # columns are token lists, joined with spaces
+        "prompt_suffix": "",           # prompt header reads "Code:"
+        "data_files": {
+            "train": "assets/data/Trans_Review/train.jsonl",
+            "validation": "assets/data/Trans_Review/val.jsonl",
+            "test": "assets/data/Trans_Review/test.jsonl",
+        },
+    },
+    "acra_by_ls_pt": {
+        "input_column": "patch",
+        "target_column": "msg",
+        "join_tokens": False,
+        "prompt_suffix": " changes",   # prompt header reads "Code changes:"
+        "data_files": {
+            "train": TRAIN_DATA_DIR,
+            "validation": VAL_DATA_DIR,
+            "test": TEST_DATA_DIR,
+        },
+    },
+}
+
+
+def get_dataset_config(name):
+    try:
+        return DATASET_CONFIGS[name]
+    except KeyError:
+        raise ValueError(
+            f"Unknown dataset: {name}; expected one of {sorted(DATASET_CONFIGS)}"
+        ) from None
+
+
+def is_placeholder_repo(repo_id):
+    """True for the shipped 'your-huggingface-username/...' placeholder ids."""
+    return isinstance(repo_id, str) and repo_id.startswith("your-huggingface-username/")
+#-------------------------------------------------------------------------
