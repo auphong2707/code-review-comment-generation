@@ -182,3 +182,17 @@ results/
 **assets**
 AGENTS.md
 **PROMPTS.md
+
+# --- AI agent infrastructure (local only, never published) ---
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+.agents/
+.codex/
+/ai/
+/docs/ai/
+/plans/
+/scripts/ai/
+
+# Local results dir used by constants.py (RESULTS_DIR="./results-cc/")
+results-cc/
