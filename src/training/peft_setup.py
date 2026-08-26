@@ -94,6 +94,8 @@ def build_training_args(spec, ctx, smoke=False):
             save_strategy="no",
             load_best_model_at_end=False,
             report_to="none",
+            per_device_train_batch_size=1,
+            per_device_eval_batch_size=1,
         )
 
     return cls(**kwargs)
