@@ -5,57 +5,41 @@ This directory contains scripts for running In-Context Learning (ICL) inference 
 ## Files
 
 - `src/icl_inference.py` - Main ICL inference script
-- `run_icl_batch.sh` - Bash script for running multiple ICL experiments (Linux/Mac)
-- `run_icl_batch.ps1` - PowerShell script for running multiple ICL experiments (Windows)
 
 ## Quick Start
-
-### Single Experiment
 
 Run ICL inference for a specific model:
 
 ```bash
 # Basic usage - 3 examples with random selection
-python src/icl_inference.py --model_name codet5 --num_examples 3
+python -m src.icl_inference --model_name codet5 --num_examples 3
 
 # Zero-shot inference (no ICL examples)
-python src/icl_inference.py --model_name codet5 --num_examples 0
+python -m src.icl_inference --model_name codet5 --num_examples 0
 
 # Different selection methods
-python src/icl_inference.py --model_name codet5 --num_examples 5 --selection_method diverse
+python -m src.icl_inference --model_name codet5 --num_examples 5 --selection_method diverse
 
 # Limit test samples for quick testing
-python src/icl_inference.py --model_name codet5 --num_examples 3 --max_samples 10
-```
-
-### Batch Experiments
-
-Run multiple experiments with different settings:
-
-**Linux/Mac:**
-```bash
-chmod +x run_icl_batch.sh
-./run_icl_batch.sh
-```
-
-**Windows:**
-```powershell
-.\run_icl_batch.ps1
+python -m src.icl_inference --model_name codet5 --num_examples 3 --max_samples 10
 ```
 
 ## Command Line Arguments
 
 ### Required Arguments
-- `--model_name`: Model to use (`codet5`, `plbart`, `qwen15`, `qwen25`)
+- `--model_name`: Model to use (`codet5`, `plbart`, `qwen15`, `qwen25`, `qwen25-0.5b`)
 
 ### ICL Configuration
 - `--num_examples`: Number of ICL examples (default: 3, use 0 for zero-shot)
 - `--selection_method`: How to select examples (`random`, `first`, `diverse`)
 
 ### Data Configuration
-- `--test_data_path`: Path to test dataset (default: from constants.py)
-- `--train_data_path`: Path to training dataset (default: from constants.py)
+- `--dataset`: Dataset to use (`trans_review` or `acra_by_ls_pt`; default from constants.py)
+- `--test_data_path`: Path to test dataset (default: from the dataset registry)
+- `--train_data_path`: Path to training dataset (default: from the dataset registry)
 - `--max_samples`: Limit number of test samples (useful for quick testing)
+- `--upload`: Opt in to uploading the results directory to the Hugging Face Hub
+- `--verbose`: Print per-sample prompts and generations
 
 ### Output Configuration
 - `--output_path`: Specific path to save results JSON file

@@ -196,3 +196,6 @@ CLAUDE.local.md
 
 # Local results dir used by constants.py (RESULTS_DIR="./results-cc/")
 results-cc/
+
+# Weights & Biases run dirs
+wandb/
