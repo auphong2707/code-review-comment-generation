@@ -29,6 +29,15 @@ class JudgeConfig:
     # predate them, and neither field enters make_cache_key.
     repair_retry: bool = False
     emit_debug_columns: bool = False
+    # Second-judge support (phase 05, D-019). All default-inert: the default
+    # config must keep producing byte-identical tables and cache keys.
+    # column_prefix/backend never enter make_cache_key; top_k/
+    # repetition_penalty/seed enter it only when not None.
+    column_prefix: str = "qwen_judge_"
+    backend: str = "qwen"  # qwen | hf-chat | mock (mock=True still wins)
+    top_k: Optional[int] = None
+    repetition_penalty: Optional[float] = None
+    seed: Optional[int] = None
 
     def __post_init__(self):
         if self.k < 1:
@@ -47,3 +56,7 @@ class JudgeConfig:
             raise ValueError("device must be 'cuda', 'cuda:N', 'cpu', or 'auto'")
         if self.temperature == 0.0 and self.do_sample:
             object.__setattr__(self, "do_sample", False)
+        if self.backend not in ("qwen", "hf-chat", "mock"):
+            raise ValueError("backend must be 'qwen', 'hf-chat', or 'mock'")
+        if not self.column_prefix:
+            raise ValueError("column_prefix must be non-empty")

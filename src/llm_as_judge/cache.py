@@ -5,6 +5,19 @@ from typing import Any, Dict, Mapping, Optional
 
 
 def make_cache_key(record: Mapping[str, Any], config, run_index: int) -> str:
+    generation_settings = {
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+        "max_new_tokens": config.max_new_tokens,
+        "do_sample": config.do_sample,
+    }
+    # Phase-05 fields join the key only when set: the default config must keep
+    # producing the exact legacy keys (frozen-cache invariant).
+    for field in ("top_k", "repetition_penalty", "seed"):
+        value = getattr(config, field, None)
+        if value is not None:
+            generation_settings[field] = value
+
     payload = {
         "prompt_version": config.prompt_version,
         "model_path": config.model_path,
@@ -12,12 +25,7 @@ def make_cache_key(record: Mapping[str, Any], config, run_index: int) -> str:
         "prediction": record.get("prediction", ""),
         "reference": record.get("reference", ""),
         "run_index": run_index,
-        "generation_settings": {
-            "temperature": config.temperature,
-            "top_p": config.top_p,
-            "max_new_tokens": config.max_new_tokens,
-            "do_sample": config.do_sample,
-        },
+        "generation_settings": generation_settings,
     }
     data = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(data.encode("utf-8")).hexdigest()

@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from .config import JudgeConfig
 from .qwen_judge import CODE_COLUMNS, MockJudge, QwenJudge
+from .qwen_judge import make_judge as _make_judge
 from .scorer import JUDGE_COLUMNS  # re-exported for consumers
 
 JUDGE_CODE_COLUMNS = CODE_COLUMNS  # legacy alias
@@ -53,6 +54,19 @@ def add_judge_arguments(parser):
                         help="Retry parse failures once with a deterministic repair prompt")
     parser.add_argument("--judge-emit-debug", dest="judge_emit_debug", action="store_true",
                         help="Emit qwen_judge_raw_outputs/qwen_judge_component_scores columns")
+    parser.add_argument("--judge-backend", dest="judge_backend", default=JudgeConfig.backend,
+                        choices=["qwen", "hf-chat", "mock"],
+                        help="Judge backend (default qwen; hf-chat for non-Qwen chat models)")
+    parser.add_argument("--judge-column-prefix", dest="judge_column_prefix",
+                        default=JudgeConfig.column_prefix,
+                        help="Output column prefix (e.g. llama_judge_ for the second judge)")
+    parser.add_argument("--judge-top-k", dest="judge_top_k", type=int, default=None,
+                        help="hf-chat backend: top_k sampling parameter (default: unset)")
+    parser.add_argument("--judge-repetition-penalty", dest="judge_repetition_penalty",
+                        type=float, default=None,
+                        help="hf-chat backend: repetition penalty (default: unset)")
+    parser.add_argument("--judge-seed", dest="judge_seed", type=int, default=None,
+                        help="hf-chat backend: torch.manual_seed(seed + run_index) per batch")
 
 
 def build_judge_config(args):
@@ -66,6 +80,11 @@ def build_judge_config(args):
         mock=args.judge_mock,
         repair_retry=args.judge_repair_retry,
         emit_debug_columns=args.judge_emit_debug,
+        backend=getattr(args, "judge_backend", JudgeConfig.backend),
+        column_prefix=getattr(args, "judge_column_prefix", JudgeConfig.column_prefix),
+        top_k=getattr(args, "judge_top_k", None),
+        repetition_penalty=getattr(args, "judge_repetition_penalty", None),
+        seed=getattr(args, "judge_seed", None),
     )
 
 
@@ -115,22 +134,23 @@ def get_judge_text(row, sample, explicit_column, default_column, label):
 
 
 def failed_judge_result(judge_config):
+    prefix = judge_config.column_prefix
     result = {
-        "qwen_judge_score": float("nan"),
-        "qwen_judge_mean": float("nan"),
-        "qwen_judge_median": float("nan"),
-        "qwen_judge_std": float("nan"),
-        "qwen_judge_agreement": float("nan"),
-        "qwen_judge_norm": float("nan"),
-        "qwen_judge_k": judge_config.k,
-        "qwen_judge_valid_runs": 0,
-        "qwen_judge_parse_errors": judge_config.k,
-        "qwen_judge_model": judge_config.model_path,
-        "qwen_judge_prompt_version": judge_config.prompt_version,
+        f"{prefix}score": float("nan"),
+        f"{prefix}mean": float("nan"),
+        f"{prefix}median": float("nan"),
+        f"{prefix}std": float("nan"),
+        f"{prefix}agreement": float("nan"),
+        f"{prefix}norm": float("nan"),
+        f"{prefix}k": judge_config.k,
+        f"{prefix}valid_runs": 0,
+        f"{prefix}parse_errors": judge_config.k,
+        f"{prefix}model": judge_config.model_path,
+        f"{prefix}prompt_version": judge_config.prompt_version,
     }
     if judge_config.emit_debug_columns:
-        result["qwen_judge_raw_outputs"] = []
-        result["qwen_judge_component_scores"] = []
+        result[f"{prefix}raw_outputs"] = []
+        result[f"{prefix}component_scores"] = []
     return result
 
 
@@ -143,7 +163,7 @@ def save_json_result(path, results):
 
 
 def make_judge(judge_config):
-    return MockJudge(judge_config) if judge_config.mock else QwenJudge(judge_config)
+    return _make_judge(judge_config)
 
 
 def judge_rows(rows, raw_samples, dataset_name, judge_config, args, judge=None):

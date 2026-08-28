@@ -67,6 +67,7 @@ class MockJudge:
         normalize_record(record, self.config)
         components = {"c": 4, "g": 4, "a": 4, "s": 4, "q": 4}
         score = score_components(components)
+        prefix = self.config.column_prefix
         result = aggregate_scores(
             [score for _ in range(self.config.k)],
             k=self.config.k,
@@ -74,10 +75,11 @@ class MockJudge:
             model_path=self.config.model_path,
             prompt_version=self.config.prompt_version,
             penalty_lambda=self.config.penalty_lambda,
+            column_prefix=prefix,
         )
         if self.config.emit_debug_columns:
-            result["qwen_judge_raw_outputs"] = [MOCK_RAW_OUTPUT] * self.config.k
-            result["qwen_judge_component_scores"] = [dict(components) for _ in range(self.config.k)]
+            result[f"{prefix}raw_outputs"] = [MOCK_RAW_OUTPUT] * self.config.k
+            result[f"{prefix}component_scores"] = [dict(components) for _ in range(self.config.k)]
         return result
 
     def score_records(self, records: Iterable[Mapping[str, Any]]) -> list[dict]:
@@ -161,7 +163,8 @@ class QwenJudge:
             )
         return "\n\n".join(f"{item['role']}: {item['content']}" for item in messages) + "\nassistant:"
 
-    def _generate_from_prompts(self, prompts: list[str], *, deterministic: bool = False) -> list[str]:
+    def _generate_from_prompts(self, prompts: list[str], *, deterministic: bool = False,
+                               run_index: int = 0) -> list[str]:
         inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self._device())
         input_length = inputs["input_ids"].shape[1]
 
@@ -184,7 +187,7 @@ class QwenJudge:
             outputs.append(self.tokenizer.decode(output_ids, skip_special_tokens=True).strip())
         return outputs
 
-    def _generate_batch(self, records: list[Mapping[str, Any]]) -> list[str]:
+    def _generate_batch(self, records: list[Mapping[str, Any]], run_index: int = 0) -> list[str]:
         self._load()
         prompts = [
             self._render_prompt(
@@ -197,7 +200,7 @@ class QwenJudge:
             )
             for record in records
         ]
-        return self._generate_from_prompts(prompts)
+        return self._generate_from_prompts(prompts, run_index=run_index)
 
     def _generate_repair_batch(self, items: list[tuple[Mapping[str, Any], str]]) -> list[str]:
         """One deterministic re-prompt per parse failure (spec: repair retry)."""
@@ -263,7 +266,7 @@ class QwenJudge:
             for start in range(0, len(uncached), self.config.batch_size):
                 batch = uncached[start:start + self.config.batch_size]
                 batch_records = [item[2] for item in batch]
-                raw_outputs = self._generate_batch(batch_records)
+                raw_outputs = self._generate_batch(batch_records, run_index=run_index)
 
                 repair_items = []
                 for (record_index, key, normalized), raw_output in zip(batch, raw_outputs):
@@ -296,6 +299,7 @@ class QwenJudge:
                         accept(record_index, key, repaired_raw, component_scores, run_score)
 
         results = []
+        prefix = self.config.column_prefix
         for index, scores in enumerate(run_scores):
             result = aggregate_scores(
                 scores,
@@ -304,19 +308,29 @@ class QwenJudge:
                 model_path=self.config.model_path,
                 prompt_version=self.config.prompt_version,
                 penalty_lambda=self.config.penalty_lambda,
+                column_prefix=prefix,
             )
             if self.config.emit_debug_columns:
-                result["qwen_judge_raw_outputs"] = raw_history[index]
-                result["qwen_judge_component_scores"] = component_history[index]
+                result[f"{prefix}raw_outputs"] = raw_history[index]
+                result[f"{prefix}component_scores"] = component_history[index]
             results.append(result)
         return results
 
 
+def make_judge(config: JudgeConfig):
+    """Single backend dispatch (phase 05): mock=True always wins."""
+    if config.mock or config.backend == "mock":
+        return MockJudge(config)
+    if config.backend == "hf-chat":
+        from .hf_chat_judge import HFChatJudge
+
+        return HFChatJudge(config)
+    return QwenJudge(config)
+
+
 def score_record(record: Mapping[str, Any], config: JudgeConfig) -> dict:
-    judge = MockJudge(config) if config.mock else QwenJudge(config)
-    return judge.score_record(record)
+    return make_judge(config).score_record(record)
 
 
 def score_records(records: Iterable[Mapping[str, Any]], config: JudgeConfig) -> list[dict]:
-    judge = MockJudge(config) if config.mock else QwenJudge(config)
-    return judge.score_records(records)
+    return make_judge(config).score_records(records)

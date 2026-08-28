@@ -141,7 +141,7 @@ def _stubbed_qwen_judge(config, outputs_by_call):
     judge = QwenJudge(config)
     calls = {"n": 0, "repair": 0}
 
-    def fake_generate_batch(records):
+    def fake_generate_batch(records, run_index=0):
         result = outputs_by_call[calls["n"]]
         calls["n"] += 1
         return result[: len(records)]
@@ -198,5 +198,16 @@ def test_default_cache_key_is_stable():
 
 
 def test_new_config_fields_do_not_change_cache_keys():
-    with_new_fields = JudgeConfig(repair_retry=True, emit_debug_columns=True)
+    with_new_fields = JudgeConfig(
+        repair_retry=True, emit_debug_columns=True,
+        # phase-05 fields at their defaults must be key-inert; column_prefix
+        # and backend NEVER enter the key (same measurement, different label)
+        column_prefix="llama_judge_", backend="hf-chat",
+        top_k=None, repetition_penalty=None, seed=None,
+    )
     assert make_cache_key(GOLDEN_RECORD, with_new_fields, 0) == GOLDEN_DEFAULT_KEY
+
+
+def test_set_generation_fields_change_cache_key():
+    for kwargs in ({"top_k": 20}, {"repetition_penalty": 1.05}, {"seed": 42}):
+        assert make_cache_key(GOLDEN_RECORD, JudgeConfig(**kwargs), 0) != GOLDEN_DEFAULT_KEY

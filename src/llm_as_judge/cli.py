@@ -92,6 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prediction-column", default=None)
     parser.add_argument("--reference-column", default=None)
     parser.add_argument("--mock", action="store_true", help="Use deterministic mock scores for smoke tests")
+    parser.add_argument("--judge-backend", default=JudgeConfig.backend,
+                        choices=["qwen", "hf-chat", "mock"],
+                        help="Judge backend (default qwen; hf-chat for non-Qwen chat models)")
+    parser.add_argument("--judge-column-prefix", default=JudgeConfig.column_prefix,
+                        help="Output column prefix (e.g. llama_judge_)")
+    parser.add_argument("--judge-top-k", type=int, default=None,
+                        help="hf-chat backend: top_k sampling parameter")
+    parser.add_argument("--judge-repetition-penalty", type=float, default=None,
+                        help="hf-chat backend: repetition penalty")
+    parser.add_argument("--judge-seed", type=int, default=None,
+                        help="hf-chat backend: torch.manual_seed(seed + run_index) per batch")
     return parser
 
 
@@ -112,6 +123,11 @@ def config_from_args(args) -> JudgeConfig:
         prediction_column=args.prediction_column,
         reference_column=args.reference_column,
         mock=args.mock,
+        backend=args.judge_backend,
+        column_prefix=args.judge_column_prefix,
+        top_k=args.judge_top_k,
+        repetition_penalty=args.judge_repetition_penalty,
+        seed=args.judge_seed,
     )
 
 

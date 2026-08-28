@@ -21,8 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.llm_as_judge import JudgeConfig
 from src.llm_as_judge.integration import failed_judge_result
-from src.llm_as_judge.qwen_judge import MockJudge, QwenJudge
-from src.llm_as_judge.scorer import JUDGE_COLUMNS
+from src.llm_as_judge.qwen_judge import make_judge
 
 
 DEFAULT_JUDGE_MODEL = "assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct"
@@ -160,8 +159,10 @@ def iter_result_rows(job: Mapping) -> Iterable[tuple[int, str, str]]:
         yield index, prediction, reference
 
 
-def filter_jobs(job_group: str, limit_jobs: int | None) -> list[dict]:
-    jobs = [dict(job) for job in JOBS]
+def filter_jobs(job_group: str, limit_jobs: int | None, jobs_source: list | None = None) -> list[dict]:
+    # jobs_source lets revision runs pass --jobs-file entries; the frozen JOBS
+    # table stays the default (KI-002)
+    jobs = [dict(job) for job in (JOBS if jobs_source is None else jobs_source)]
     if job_group == "trans-review-finetuned":
         jobs = [
             job for job in jobs
@@ -220,6 +221,8 @@ def build_inputs(
     jobs: list[dict],
     limit_samples: int | None,
     job_group: str,
+    sample_indices: Mapping | None = None,
+    reuse_inputs: Path | None = None,
 ) -> list[dict]:
     LOGGER.info("Building judge input JSONL files")
     input_dir = out_root / "inputs"
@@ -238,30 +241,41 @@ def build_inputs(
             f"tables_{job['tables'].replace(',', '_')}_{job['dataset']}_"
             f"{slug(job['model'])}_{slug(job['method'])}_{job['source']}"
         )
-        input_path = input_dir / f"{job_id}.jsonl"
         output_path = scored_dir / f"{job_id}.jsonl"
-        rows = []
 
-        for index, prediction, reference in iter_result_rows(job):
-            if index >= len(raw_samples):
-                break
-            if limit_samples is not None and len(rows) >= limit_samples:
-                break
-            rows.append({
-                "tables": job["tables"],
-                "dataset": dataset_info["label"],
-                "model": job["model"],
-                "method": job["method"],
-                "source": job["source"],
-                "source_result": job["result"],
-                "sample_index": index,
-                "code_or_diff": code_or_diff(raw_samples[index], dataset_info),
-                "prediction": prediction,
-                "reference": reference,
-            })
+        if reuse_inputs is not None:
+            # read the previously built inputs verbatim (identical judge
+            # inputs across backends is the D-019 comparability requirement)
+            input_path = reuse_inputs / f"{job_id}.jsonl"
+            if not input_path.exists():
+                raise SystemExit(f"--reuse-inputs: missing {input_path}")
+            rows = load_jsonl(input_path)
+        else:
+            input_path = input_dir / f"{job_id}.jsonl"
+            keep = sample_indices.get(job["dataset"]) if sample_indices else None
+            rows = []
+            for index, prediction, reference in iter_result_rows(job):
+                if index >= len(raw_samples):
+                    break
+                if keep is not None and index not in keep:
+                    continue
+                if limit_samples is not None and len(rows) >= limit_samples:
+                    break
+                rows.append({
+                    "tables": job["tables"],
+                    "dataset": dataset_info["label"],
+                    "model": job["model"],
+                    "method": job["method"],
+                    "source": job["source"],
+                    "source_result": job["result"],
+                    "sample_index": index,
+                    "code_or_diff": code_or_diff(raw_samples[index], dataset_info),
+                    "prediction": prediction,
+                    "reference": reference,
+                })
 
-        write_jsonl(input_path, rows)
-        LOGGER.info("Wrote %s rows to %s", len(rows), input_path)
+            write_jsonl(input_path, rows)
+            LOGGER.info("Wrote %s rows to %s", len(rows), input_path)
         manifest_rows.append({
             "job_id": job_id,
             "tables": job["tables"],
@@ -283,7 +297,7 @@ def build_inputs(
 
 def score_manifest(manifest_rows: Iterable[Mapping], config: JudgeConfig) -> None:
     LOGGER.info("Starting LLM-as-Judge scoring")
-    judge = MockJudge(config) if config.mock else QwenJudge(config)
+    judge = make_judge(config)
     for job in manifest_rows:
         input_path = Path(job["input_path"])
         output_path = Path(job["output_path"])
@@ -341,10 +355,12 @@ def mean_finite(rows: Iterable[Mapping], column: str) -> float:
     return statistics.fmean(values) if values else math.nan
 
 
-def write_summary(out_root: Path, manifest_rows: Iterable[Mapping], job_group: str) -> Path:
+def write_summary(out_root: Path, manifest_rows: Iterable[Mapping], job_group: str,
+                  column_prefix: str = "qwen_judge_") -> Path:
     LOGGER.info("Writing summary CSV")
     summary_path = out_root / f"summary{output_stem(job_group)}.csv"
     summary_rows = []
+    p = column_prefix
 
     for job in tqdm(list(manifest_rows), desc="Summarizing judged outputs", unit="job"):
         scored_path = Path(job["output_path"])
@@ -353,7 +369,7 @@ def write_summary(out_root: Path, manifest_rows: Iterable[Mapping], job_group: s
         else:
             LOGGER.warning("Missing judged output for %s: %s", job_label(job), scored_path)
             rows = []
-        valid_rows = sum(1 for row in rows if row.get("qwen_judge_valid_runs", 0) > 0)
+        valid_rows = sum(1 for row in rows if row.get(f"{p}valid_runs", 0) > 0)
         summary_rows.append({
             "tables": job["tables"],
             "dataset": job["dataset"],
@@ -362,10 +378,10 @@ def write_summary(out_root: Path, manifest_rows: Iterable[Mapping], job_group: s
             "source": job["source"],
             "rows": len(rows),
             "valid_rows": valid_rows,
-            "qwen_judge_score": mean_finite(rows, "qwen_judge_score"),
-            "qwen_judge_mean": mean_finite(rows, "qwen_judge_mean"),
-            "qwen_judge_std": mean_finite(rows, "qwen_judge_std"),
-            "qwen_judge_agreement": mean_finite(rows, "qwen_judge_agreement"),
+            f"{p}score": mean_finite(rows, f"{p}score"),
+            f"{p}mean": mean_finite(rows, f"{p}mean"),
+            f"{p}std": mean_finite(rows, f"{p}std"),
+            f"{p}agreement": mean_finite(rows, f"{p}agreement"),
             "source_result": job["source_result"],
             "judged_output": job["output_path"],
         })
@@ -378,10 +394,10 @@ def write_summary(out_root: Path, manifest_rows: Iterable[Mapping], job_group: s
         "source",
         "rows",
         "valid_rows",
-        "qwen_judge_score",
-        "qwen_judge_mean",
-        "qwen_judge_std",
-        "qwen_judge_agreement",
+        f"{p}score",
+        f"{p}mean",
+        f"{p}std",
+        f"{p}agreement",
         "source_result",
         "judged_output",
     ]
@@ -414,6 +430,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock", action="store_true", help="Use deterministic mock judge scores")
     parser.add_argument("--limit-jobs", type=int, default=None, help="Smoke-test only: score first N jobs")
     parser.add_argument("--limit-samples", type=int, default=None, help="Smoke-test only: score first N samples per job")
+    parser.add_argument("--jobs-file", default=None,
+                        help="JSON list of JOBS-shaped dicts (revision runs); default: the frozen JOBS table")
+    parser.add_argument("--column-prefix", default="qwen_judge_",
+                        help="Judge output column prefix (e.g. llama_judge_ for the second judge)")
+    parser.add_argument("--backend", default="qwen", choices=["qwen", "hf-chat", "mock"],
+                        help="Judge backend (default qwen)")
+    parser.add_argument("--judge-top-k", type=int, default=None,
+                        help="hf-chat backend: top_k sampling parameter")
+    parser.add_argument("--judge-repetition-penalty", type=float, default=None,
+                        help="hf-chat backend: repetition penalty")
+    parser.add_argument("--judge-seed", type=int, default=None,
+                        help="hf-chat backend: torch.manual_seed(seed + run_index) per batch")
+    parser.add_argument("--sample-index-file", default=None,
+                        help="JSON {dataset: [indices]} restricting rows (e.g. the CR judge subset)")
+    parser.add_argument("--reuse-inputs", default=None,
+                        help="Directory of existing inputs/<job_id>.jsonl to score instead of rebuilding")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Logging level (default: INFO)")
@@ -453,7 +485,10 @@ def main() -> None:
     args = build_parser().parse_args()
     configure_logging(args.log_level)
     out_root = Path(args.out_root)
-    jobs = filter_jobs(args.job_group, args.limit_jobs)
+    jobs_source = None
+    if args.jobs_file:
+        jobs_source = json.loads(Path(args.jobs_file).read_text(encoding="utf-8"))
+    jobs = filter_jobs(args.job_group, args.limit_jobs, jobs_source)
     LOGGER.info("Preparing %s table job(s)", len(jobs))
     LOGGER.info("Job group: %s", args.job_group)
     LOGGER.info("Output root: %s", out_root)
@@ -468,17 +503,27 @@ def main() -> None:
         )
 
     verify_sources(jobs)
-    manifest_rows = build_inputs(out_root, jobs, args.limit_samples, args.job_group)
+    sample_indices = None
+    if args.sample_index_file:
+        subset = json.loads(Path(args.sample_index_file).read_text(encoding="utf-8"))
+        if "dataset" in subset and "indices" in subset:  # make_cr_judge_subset.py format
+            subset = {subset["dataset"]: subset["indices"]}
+        sample_indices = {dataset: set(indices) for dataset, indices in subset.items()}
+    manifest_rows = build_inputs(
+        out_root, jobs, args.limit_samples, args.job_group,
+        sample_indices=sample_indices,
+        reuse_inputs=Path(args.reuse_inputs) if args.reuse_inputs else None,
+    )
     LOGGER.info("Prepared %s job(s)", len(manifest_rows))
 
     if args.summary_only:
         LOGGER.info("Summary-only mode enabled; skipping judge scoring")
-        summary_path = write_summary(out_root, manifest_rows, args.job_group)
+        summary_path = write_summary(out_root, manifest_rows, args.job_group, args.column_prefix)
         LOGGER.info("Done. Summary: %s", summary_path)
         return
 
     preflight_device(args)
-    cache_path = args.judge_cache_path or str(out_root / "qwen_judge_cache.jsonl")
+    cache_path = args.judge_cache_path or str(out_root / f"{args.column_prefix}cache.jsonl")
     LOGGER.info("Judge cache: %s", cache_path)
     config = JudgeConfig(
         model_path=args.judge_model_path,
@@ -491,10 +536,15 @@ def main() -> None:
         prediction_column="prediction",
         reference_column="reference",
         mock=args.mock,
+        backend=args.backend,
+        column_prefix=args.column_prefix,
+        top_k=args.judge_top_k,
+        repetition_penalty=args.judge_repetition_penalty,
+        seed=args.judge_seed,
     )
 
     score_manifest(manifest_rows, config)
-    summary_path = write_summary(out_root, manifest_rows, args.job_group)
+    summary_path = write_summary(out_root, manifest_rows, args.job_group, args.column_prefix)
     LOGGER.info("Done. Summary: %s", summary_path)
 
 
