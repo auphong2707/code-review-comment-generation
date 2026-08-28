@@ -36,6 +36,9 @@ from src.llm_as_judge.integration import (
     build_judge_config,
     save_json_result,
 )
+from src.icl import prompts as icl_prompts
+from src.icl.naming import icl_result_filename
+from src.icl.selection import BM25Selection, demo_seed_select, legacy_select
 
 
 def get_max_context_length(model) -> int:
@@ -84,12 +87,14 @@ def check_context_length_warning(text: str, tokenizer, model, context_type: str 
     return False
 
 
-def load_base_model_and_tokenizer(model_name: str):
+def load_base_model_and_tokenizer(model_name: str, attn_implementation: str = None):
     """Load the base model and tokenizer for ICL inference.
-    
+
     Args:
         model_name: Name of the model ("codet5", "plbart", "qwen15", "qwen25", "qwen25-0.5b")
-    
+        attn_implementation: override for the causal models (default: legacy
+            flash_attention_2 on CUDA; pass "sdpa" on machines without flash-attn)
+
     Returns:
         tuple: (model, tokenizer)
     """
@@ -116,12 +121,13 @@ def load_base_model_and_tokenizer(model_name: str):
     if model_name in ["codet5", "plbart"]:
         model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
     elif model_name in ["qwen15", "qwen25", "qwen25-0.5b", "qwen25-14b"]:
+        attn = attn_implementation or ("flash_attention_2" if torch.cuda.is_available() else None)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
-            attn_implementation="flash_attention_2" if torch.cuda.is_available() else None
+            attn_implementation=attn
         )
         # Configure tokenizer for left-padding for causal models
         tokenizer.padding_side = "left"
@@ -156,192 +162,63 @@ def select_icl_examples(train_data: List[Dict], num_examples: int, selection_met
     Returns:
         List of selected examples
     """
-    if num_examples <= 0:
-        return []
-    
-    if num_examples >= len(train_data):
-        selected = train_data
-    elif selection_method == "random":
-        random.seed(seed)
-        selected = random.sample(train_data, num_examples)
-    elif selection_method == "first":
-        selected = train_data[:num_examples]
-    elif selection_method == "diverse":
-        # Simple diversity: select examples spread across the dataset
-        step = len(train_data) // num_examples
-        selected = [train_data[i * step] for i in range(num_examples)]
-    else:
-        raise ValueError(f"Unknown selection method: {selection_method}")
-    
+    selected = legacy_select(train_data, num_examples, selection_method, seed)
+
     # If model and tokenizer provided, check if we can fit more examples
     if model and tokenizer and current_sample:
         selected = optimize_icl_examples_for_context(selected, current_sample, model_name, tokenizer, model)
-    
+
     return selected
 
 
-def optimize_icl_examples_for_context(selected_examples: List[Dict], current_sample: Dict, 
-                                     model_name: str, tokenizer, model) -> List[Dict]:
-    """Optimize ICL examples to maximize context usage without exceeding limits.
-    
-    Args:
-        selected_examples: Initially selected examples
-        current_sample: Current test sample
-        model_name: Name of the model (for prompt building)
-        tokenizer: Tokenizer for length calculation
-        model: The loaded model
-    
-    Returns:
-        Optimized list of examples
-    """
-    if DATASET_NAME == "trans_review":
-        test_code = " ".join(current_sample["code_tokens"])
-    elif DATASET_NAME == "acra_by_ls_pt":
-        test_code = current_sample['patch']
+def optimize_icl_examples_for_context(selected_examples: List[Dict], current_sample: Dict,
+                                     model_name: str, tokenizer, model,
+                                     dataset_name: str = None,
+                                     prompt_version: str = "v1") -> List[Dict]:
+    """Greedy legacy fit: keep prefix demos while the rendered prompt fits the
+    model context (causal models reserve OUTPUT_MAX_LENGTH for the output)."""
+    dataset_name = dataset_name or DATASET_NAME
+    test_code, _ = extract_input_target(current_sample, dataset_name)
     max_context = get_max_context_length(model)
-    
-    if model_name in ["codet5", "plbart"]:
-        # For seq2seq models, build prompt and check length
-        prompt = build_icl_prompt_seq2seq(selected_examples, test_code)
-        tokens = tokenizer.encode(prompt, add_special_tokens=True)
-        
-        if len(tokens) <= max_context:
-            return selected_examples
-        
-        # If too long, try to fit as many examples as possible
-        optimized_examples = []
-        for example in selected_examples:
-            temp_examples = optimized_examples + [example]
-            temp_prompt = build_icl_prompt_seq2seq(temp_examples, test_code)
-            temp_tokens = tokenizer.encode(temp_prompt, add_special_tokens=True)
-            
-            if len(temp_tokens) <= max_context:
-                optimized_examples.append(example)
-            else:
-                break
-        
-        if len(optimized_examples) < len(selected_examples):
-            warnings.warn(
-                f"Reduced ICL examples from {len(selected_examples)} to {len(optimized_examples)} "
-                f"to fit within model context limit ({max_context} tokens)",
-                UserWarning
-            )
-        
-        return optimized_examples
-    
-    else:  # Causal LM models
-        # For causal models, build messages and check length
-        messages = build_icl_prompt_causal(selected_examples, test_code, tokenizer)
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        tokens = tokenizer.encode(prompt, add_special_tokens=True)
-        
-        # Reserve space for output
-        available_context = max_context - OUTPUT_MAX_LENGTH
-        
-        if len(tokens) <= available_context:
-            return selected_examples
-        
-        # If too long, try to fit as many examples as possible
-        optimized_examples = []
-        for example in selected_examples:
-            temp_examples = optimized_examples + [example]
-            temp_messages = build_icl_prompt_causal(temp_examples, test_code, tokenizer)
-            temp_prompt = tokenizer.apply_chat_template(temp_messages, tokenize=False, add_generation_prompt=True)
-            temp_tokens = tokenizer.encode(temp_prompt, add_special_tokens=True)
-            
-            if len(temp_tokens) <= available_context:
-                optimized_examples.append(example)
-            else:
-                break
-        
-        if len(optimized_examples) < len(selected_examples):
-            warnings.warn(
-                f"Reduced ICL examples from {len(selected_examples)} to {len(optimized_examples)} "
-                f"to fit within model context limit ({available_context} tokens available for input)",
-                UserWarning
-            )
-        
-        return optimized_examples
+    seq2seq = model_name in ["codet5", "plbart"]
+    available_context = max_context if seq2seq else max_context - OUTPUT_MAX_LENGTH
+
+    def prompt_tokens(examples):
+        if seq2seq:
+            prompt = icl_prompts.build_icl_prompt_seq2seq(examples, test_code, dataset_name, prompt_version)
+        else:
+            messages = icl_prompts.build_icl_prompt_causal(examples, test_code, dataset_name, prompt_version)
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return len(tokenizer.encode(prompt, add_special_tokens=True))
+
+    if prompt_tokens(selected_examples) <= available_context:
+        return selected_examples
+
+    optimized_examples = []
+    for example in selected_examples:
+        if prompt_tokens(optimized_examples + [example]) <= available_context:
+            optimized_examples.append(example)
+        else:
+            break
+
+    if len(optimized_examples) < len(selected_examples):
+        warnings.warn(
+            f"Reduced ICL examples from {len(selected_examples)} to {len(optimized_examples)} "
+            f"to fit within model context limit ({available_context} tokens available for input)",
+            UserWarning
+        )
+
+    return optimized_examples
 
 
 def build_icl_prompt_seq2seq(examples: List[Dict], test_code: str) -> str:
-    """Build ICL prompt for seq2seq models (CodeT5, PLBART).
-    
-    Args:
-        examples: List of ICL examples
-        test_code: Test code to generate review for
-    
-    Returns:
-        Formatted prompt string
-    """
-    prompt_parts = []
-    
-    # Add examples
-    for example in examples:
-        if DATASET_NAME == "trans_review":
-            code = " ".join(example["code_tokens"])
-            review = " ".join(example["docstring_tokens"])
-        elif DATASET_NAME == "acra_by_ls_pt":
-            code = example['patch']
-            review = example['msg']
-        prompt_parts.append(f"Code: {code}\nReview: {review}")
-    
-    # Add test case
-    prompt_parts.append(f"Code: {test_code}\nReview:")
-    
-    return "\n\n".join(prompt_parts)
+    """Thin legacy wrapper over src.icl.prompts (module-global dataset, v1)."""
+    return icl_prompts.build_icl_prompt_seq2seq(examples, test_code, DATASET_NAME)
 
 
 def build_icl_prompt_causal(examples: List[Dict], test_code: str, tokenizer) -> List[Dict]:
-    """Build ICL prompt for causal LM models (Qwen1.5, Qwen2.5).
-    
-    Args:
-        examples: List of ICL examples
-        test_code: Test code to generate review for
-        tokenizer: Tokenizer for chat template
-    
-    Returns:
-        Messages list for chat template
-    """
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a code reviewer. Output exactly ONE concise, actionable comment "
-                "on the code. No restating, no extra context, no pleasantries. "
-                "Recommend to use up to 60 words. (longer if needed)"
-            ),
-        }
-    ]
-    
-    # Add ICL examples as conversation history
-    for example in examples:
-        if DATASET_NAME == "trans_review":
-            code = " ".join(example["code_tokens"])
-            review = " ".join(example["docstring_tokens"])
-        elif DATASET_NAME == "acra_by_ls_pt":
-            code = example['patch']
-            review = example['msg']
-        
-        suffix = " changes" if DATASET_NAME == "acra_by_ls_pt" else ""
-        messages.extend([
-            {
-                "role": "user",
-                "content": f"Code{suffix}:\n```{code}```\nReview comment?",
-            },
-            {
-                "role": "assistant",
-                "content": review.strip(),
-            }
-        ])
-    
-    # Add current test case
-    messages.append({
-        "role": "user",
-        "content": f"Code:\n```{test_code}```\nReview comment?",
-    })
-    
-    return messages
+    """Thin legacy wrapper over src.icl.prompts (module-global dataset, v1)."""
+    return icl_prompts.build_icl_prompt_causal(examples, test_code, DATASET_NAME)
 
 
 def generate_review_seq2seq(model, tokenizer, prompt: str, max_new_tokens: int = OUTPUT_MAX_LENGTH) -> str:
@@ -438,127 +315,187 @@ def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_token
     return generated_text.strip()
 
 
+def generate_batched(model, tokenizer, prompts_chunk: List[str], seq2seq: bool) -> List[str]:
+    """Batched generation with the same beam settings as the per-sample paths.
+
+    Causal batches are left-padded (tokenizer.padding_side="left"); note that
+    bf16 batching may change rare beam ties, so one batch size per model is
+    pinned in the campaign manifest (D-028c).
+    """
+    max_input_length = get_max_context_length(model) - (0 if seq2seq else OUTPUT_MAX_LENGTH)
+    inputs = tokenizer(prompts_chunk, max_length=max_input_length, truncation=True,
+                       padding=True, return_tensors="pt").to(model.device)
+    gen_kwargs = dict(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs["attention_mask"],
+        max_new_tokens=OUTPUT_MAX_LENGTH,
+        min_new_tokens=OUTPUT_MIN_LENGTH,
+        num_beams=NUM_BEAMS,
+        do_sample=False,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    with torch.no_grad():
+        if seq2seq:
+            generated = model.generate(
+                decoder_start_token_id=tokenizer.bos_token_id if hasattr(tokenizer, "bos_token_id") else None,
+                **gen_kwargs)
+        else:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                generated = model.generate(**gen_kwargs)
+            generated = generated[:, inputs["input_ids"].shape[1]:]
+    texts = []
+    for row in generated:
+        text = tokenizer.decode(row, skip_special_tokens=True).strip()
+        texts.append(text if text else EMPTY_PLACEHOLDER)
+    return texts
+
+
 def run_icl_inference(model_name: str, num_examples: int, selection_method: str = "random",
                      test_data_path: str = TEST_DATA_DIR, train_data_path: str = TRAIN_DATA_DIR,
                      output_path: str = None, max_samples: int = None, seed: int = SEED,
-                     max_context_utilization: bool = False, verbose: bool = False) -> Dict[str, Any]:
-    """Run ICL inference on test dataset.
-    
-    Args:
-        model_name: Name of the model to use
-        num_examples: Number of ICL examples to use
-        selection_method: Method for selecting ICL examples
-        test_data_path: Path to test dataset
-        train_data_path: Path to training dataset
-        output_path: Path to save results
-        max_samples: Maximum number of test samples to process
-        seed: Random seed
-        max_context_utilization: Enable aggressive context maximization
-    
-    Returns:
-        Dictionary with evaluation results including predictions, references, and prompts
+                     max_context_utilization: bool = False, verbose: bool = False,
+                     dataset_name: str = None, prompt_version: str = "v1",
+                     demo_seed: int = None, batch_size: int = 1,
+                     attn_implementation: str = None, max_prompt_tokens: int = None,
+                     allow_exact_match: bool = False) -> Dict[str, Any]:
+    """Run ICL inference on the test dataset.
+
+    Every new argument defaults to the legacy behaviour: prompt v1, global-RNG
+    demo selection seeded seed+i, greedy context fit, per-sample generation.
     """
-    
+
     # Configure warnings based on max_context_utilization flag
     if not max_context_utilization:
         warnings.filterwarnings("ignore", category=UserWarning, module=__name__)
-    
+
     print(f"Context utilization mode: {'Aggressive' if max_context_utilization else 'Standard'}")
-    
+    dataset_name = dataset_name or DATASET_NAME
+
     # Load model and tokenizer
     print(f"Loading {model_name} model...")
-    model, tokenizer = load_base_model_and_tokenizer(model_name)
-    
+    model, tokenizer = load_base_model_and_tokenizer(model_name, attn_implementation)
+    if prompt_version == "v2":
+        # an overflowing prompt keeps the test turn, not the oldest demos
+        tokenizer.truncation_side = "left"
+
     print(f"Max context length for {model_name}: {get_max_context_length(model)} tokens")
-    
+
     # Load datasets
     print("Loading datasets...")
     train_data = load_jsonl(train_data_path)
     test_data = load_jsonl(test_data_path)
-    
+
     if max_samples:
         test_data = test_data[:max_samples]
         print(f"Processing {len(test_data)} test samples")
-    
-    predictions = []
+
+    seq2seq = model_name in ["codet5", "plbart"]
+    bm25 = (BM25Selection(train_data, dataset_name, train_data_path)
+            if selection_method == "bm25" else None)
+
     references = []
     prompts = []
+    messages_per_sample = []
+    demo_counts = []
+    prompt_token_counts = []
     context_truncation_count = 0
     example_reduction_count = 0
-    
-    # Process each test sample
-    print(f"Running ICL inference with {num_examples} examples...")
-    for i, test_sample in enumerate(tqdm(test_data, desc="Generating reviews")):
+
+    def render(examples, test_code):
+        if seq2seq:
+            return icl_prompts.build_icl_prompt_seq2seq(
+                examples, test_code, dataset_name, prompt_version), None
+        messages = icl_prompts.build_icl_prompt_causal(
+            examples, test_code, dataset_name, prompt_version)
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return prompt, messages
+
+    # Pass A: select demos and render every prompt
+    for i, test_sample in enumerate(tqdm(test_data, desc="Building prompts")):
         try:
-            # Select ICL examples
-            original_num_examples = num_examples
-            icl_examples = select_icl_examples(
-                train_data, num_examples, selection_method, test_sample, seed + i, 
-                model_name, tokenizer, model
-            )
-            
-            # Track if examples were reduced due to context limits
-            if len(icl_examples) < original_num_examples:
+            test_code, reference = extract_input_target(test_sample, dataset_name)
+
+            if bm25 is not None:
+                icl_examples = bm25.select(test_code, num_examples, allow_exact_match)
+            elif demo_seed is not None:
+                icl_examples = demo_seed_select(train_data, num_examples, demo_seed, i)
+            else:
+                icl_examples = legacy_select(train_data, num_examples, selection_method, seed + i)
+
+            if max_prompt_tokens is None:
+                # legacy greedy fit against the model context
+                icl_examples = optimize_icl_examples_for_context(
+                    icl_examples, test_sample, model_name, tokenizer, model,
+                    dataset_name, prompt_version)
+                prompt, messages = render(icl_examples, test_code)
+            else:
+                # explicit budget: drop demos from the end until the prompt fits
+                prompt, messages = render(icl_examples, test_code)
+                while icl_examples and len(tokenizer.encode(prompt, add_special_tokens=True)) > max_prompt_tokens:
+                    icl_examples = icl_examples[:-1]
+                    prompt, messages = render(icl_examples, test_code)
+
+            if len(icl_examples) < num_examples:
                 example_reduction_count += 1
-            
-            # Prepare input
-            if DATASET_NAME == "trans_review":
-                test_code = " ".join(test_sample["code_tokens"])
-                reference = " ".join(test_sample["docstring_tokens"])
-            elif DATASET_NAME == "acra_by_ls_pt":
-                test_code = test_sample['patch']
-                reference = test_sample['msg']
+            if check_context_length_warning(prompt, tokenizer, model, f"sample {i+1} prompt"):
+                context_truncation_count += 1
 
-            # Generate based on model type
-            if model_name in ["codet5", "plbart"]:
-                prompt = build_icl_prompt_seq2seq(icl_examples, test_code)
-                prompts.append(prompt)
-                # Check if this specific prompt was truncated
-                if check_context_length_warning(prompt, tokenizer, model, f"sample {i+1} prompt"):
-                    context_truncation_count += 1
-                generated_review = generate_review_seq2seq(model, tokenizer, prompt)
-            else:  # qwen15, qwen25
-                messages = build_icl_prompt_causal(icl_examples, test_code, tokenizer)
-                # Convert messages to string format for storage
-                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                prompts.append(prompt)
-                # Check if this specific prompt was truncated
-                if check_context_length_warning(prompt, tokenizer, model, f"sample {i+1} prompt"):
-                    context_truncation_count += 1
-                generated_review = generate_review_causal(model, tokenizer, messages)
-            
-            # Handle empty generations
-            if not generated_review.strip():
-                print(f"WARNING: Empty generation at sample {i}")
-                generated_review = EMPTY_PLACEHOLDER
-            
-            predictions.append(generated_review)
+            prompts.append(prompt)
+            messages_per_sample.append(messages)
             references.append(reference)
-
-            # Print example details only when asked (thousands of lines on full runs)
-            if verbose:
-                print(f"\nExample {i+1}:")
-                print(f"  ICL Examples Used: {len(icl_examples)}/{original_num_examples}")
-                print(f"  Code: {test_code[:100]}...")
-                print(f"  Prompt: {prompt[:200]}...")
-                print(f"  Generated: {generated_review}")
-                print(f"  Reference: {reference}")
+            demo_counts.append(len(icl_examples))
+            prompt_token_counts.append(len(tokenizer.encode(prompt, add_special_tokens=True)))
 
         except Exception as e:
             print(f"Error processing sample {i}: {e}")
-            predictions.append("<ERROR>")
+            prompts.append("<ERROR>")
+            messages_per_sample.append(None)
             try:
-                _, error_reference = extract_input_target(test_sample, DATASET_NAME)
+                _, error_reference = extract_input_target(test_sample, dataset_name)
             except Exception:
                 error_reference = ""
             references.append(error_reference)
-            prompts.append("<ERROR>")
-    
+            demo_counts.append(0)
+            prompt_token_counts.append(0)
+
+    # Pass B: generate
+    print(f"Running ICL inference with {num_examples} examples...")
+    predictions = ["<ERROR>"] * len(prompts)
+    valid = [i for i, p in enumerate(prompts) if p != "<ERROR>"]
+
+    if batch_size <= 1:
+        for i in tqdm(valid, desc="Generating reviews"):
+            try:
+                if seq2seq:
+                    generated_review = generate_review_seq2seq(model, tokenizer, prompts[i])
+                else:
+                    generated_review = generate_review_causal(model, tokenizer, messages_per_sample[i])
+                if not generated_review.strip():
+                    print(f"WARNING: Empty generation at sample {i}")
+                    generated_review = EMPTY_PLACEHOLDER
+                predictions[i] = generated_review
+                if verbose:
+                    print(f"\nExample {i+1}:")
+                    print(f"  ICL Examples Used: {demo_counts[i]}/{num_examples}")
+                    print(f"  Prompt: {prompts[i][:200]}...")
+                    print(f"  Generated: {generated_review}")
+                    print(f"  Reference: {references[i]}")
+            except Exception as e:
+                print(f"Error generating sample {i}: {e}")
+    else:
+        for start in tqdm(range(0, len(valid), batch_size),
+                          desc=f"Generating reviews (batched x{batch_size})"):
+            idx = valid[start:start + batch_size]
+            for i, text in zip(idx, generate_batched(model, tokenizer,
+                                                     [prompts[i] for i in idx], seq2seq)):
+                predictions[i] = text
+
     # Compute the frozen metric suite (single shared implementation)
     print("Computing evaluation metrics...")
     metric_values = compute_generation_metrics(predictions, references)
 
-    # Prepare results (legacy ICL schema)
+    # Prepare results (legacy ICL schema + additive revision keys)
     results = {
         "model_name": model_name,
         "num_icl_examples": num_examples,
@@ -572,7 +509,17 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
         "max_context_length": get_max_context_length(model),
         "context_truncation_count": context_truncation_count,
         "example_reduction_count": example_reduction_count,
-        "max_context_utilization": max_context_utilization
+        "max_context_utilization": max_context_utilization,
+        "prompt_version": prompt_version,
+        "demo_seed": demo_seed,
+        "retrieval_method": selection_method,
+        "exact_match_excluded": bm25.excluded_count if bm25 else 0,
+        "demo_count_effective": sum(demo_counts) / len(demo_counts) if demo_counts else 0.0,
+        "prompt_tokens_mean": sum(prompt_token_counts) / len(prompt_token_counts) if prompt_token_counts else 0.0,
+        "prompt_tokens_max": max(prompt_token_counts, default=0),
+        "batch_size": batch_size,
+        "attn_implementation": attn_implementation,
+        "max_prompt_tokens": max_prompt_tokens,
     }
     
     print(f"\nResults:")
@@ -605,10 +552,29 @@ def main():
     parser.add_argument("--num_examples", type=int, default=3,
                        help="Number of ICL examples to use (default: 3)")
     parser.add_argument("--selection_method", type=str, default="random",
-                       choices=["random", "first", "diverse"],
+                       choices=["random", "first", "diverse", "bm25"],
                        help="Method for selecting ICL examples (default: random)")
     parser.add_argument("--max_context_utilization", action="store_true",
                        help="Enable aggressive context length maximization with warnings")
+    parser.add_argument("--prompt-version", dest="prompt_version", default="v1",
+                       choices=["v1", "v2"],
+                       help="v1 = legacy (CodeReviewer test turn says 'Code:', KI-014); "
+                            "v2 = test turn uses the dataset prompt_suffix (paper Fig. 4)")
+    parser.add_argument("--demo-seed", dest="demo_seed", type=int, default=None,
+                       help="Per-sample demo seed via an isolated RNG (default: legacy "
+                            "global random.seed(seed+i))")
+    parser.add_argument("--allow-exact-match", dest="allow_exact_match", action="store_true",
+                       help="bm25 only: keep candidates whose code equals the test code "
+                            "(excluded by default; excluded count is reported)")
+    parser.add_argument("--max-prompt-tokens", dest="max_prompt_tokens", type=int, default=None,
+                       help="Explicit prompt budget: drop demos from the end until the prompt "
+                            "fits (default: legacy greedy fit against the model context)")
+    parser.add_argument("--batch-size", dest="batch_size", type=int, default=1,
+                       help="Batched left-padded generation (1 = legacy per-sample; bf16 "
+                            "batching may change rare beam ties - pin one size per model)")
+    parser.add_argument("--attn-implementation", dest="attn_implementation", default=None,
+                       help="Override attn implementation (default: legacy flash_attention_2 "
+                            "on CUDA; use sdpa locally)")
     
     # Data arguments
     parser.add_argument("--test_data_path", type=str, default=None,
@@ -649,9 +615,14 @@ def main():
     if args.train_data_path is None:
         args.train_data_path = str(dataset_cfg["data_files"]["train"])
 
-    # Generate output path if not provided
+    # Generate output path if not provided (legacy name when every new flag is
+    # at its default, so revision outputs can never overwrite legacy artifacts)
     if args.output_path is None:
-        filename = f"{args.model_name}_icl_{args.num_examples}ex_{args.selection_method}.json"
+        filename = icl_result_filename(
+            args.model_name, args.num_examples, args.selection_method,
+            demo_seed=args.demo_seed, prompt_version=args.prompt_version,
+            non_default=(args.max_prompt_tokens is not None or args.allow_exact_match
+                         or args.batch_size != 1 or args.attn_implementation is not None))
         args.output_path = os.path.join(args.results_dir, filename)
 
     # Run ICL inference
@@ -665,7 +636,14 @@ def main():
         max_samples=args.max_samples,
         seed=args.seed,
         max_context_utilization=args.max_context_utilization,
-        verbose=args.verbose
+        verbose=args.verbose,
+        dataset_name=args.dataset,
+        prompt_version=args.prompt_version,
+        demo_seed=args.demo_seed,
+        batch_size=args.batch_size,
+        attn_implementation=args.attn_implementation,
+        max_prompt_tokens=args.max_prompt_tokens,
+        allow_exact_match=args.allow_exact_match,
     )
     
     if judge_config is None:
