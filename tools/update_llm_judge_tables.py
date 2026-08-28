@@ -250,6 +250,18 @@ def build_inputs(
             if not input_path.exists():
                 raise SystemExit(f"--reuse-inputs: missing {input_path}")
             rows = load_jsonl(input_path)
+            keep = sample_indices.get(job["dataset"]) if sample_indices else None
+            if keep is not None or limit_samples is not None:
+                # Every kept row stays byte-identical to the reused one (D-019);
+                # the filters only choose which rows are judged. The subset is
+                # written into this out-root and scored from there, because the
+                # scorer re-reads input_path from disk (KI-017b).
+                if keep is not None:
+                    rows = [row for row in rows if row.get("sample_index") in keep]
+                if limit_samples is not None:
+                    rows = rows[:limit_samples]
+                input_path = input_dir / f"{job_id}.jsonl"
+                write_jsonl(input_path, rows)
         else:
             input_path = input_dir / f"{job_id}.jsonl"
             keep = sample_indices.get(job["dataset"]) if sample_indices else None

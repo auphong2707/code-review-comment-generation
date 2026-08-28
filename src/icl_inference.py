@@ -589,7 +589,10 @@ def main():
                        help="Path to save results JSON file")
     parser.add_argument("--results_dir", type=str, default="assets/results/icl/",
                        help="Directory to save results (used if output_path not specified)")
-    
+    parser.add_argument("--skip-if-complete", dest="skip_if_complete", action="store_true",
+                       help="Exit 0 immediately when the result JSON already exists "
+                            "(idempotent campaign re-submission)")
+
     # General arguments
     parser.add_argument("--seed", type=int, default=SEED,
                        help="Random seed for reproducibility")
@@ -624,6 +627,14 @@ def main():
             non_default=(args.max_prompt_tokens is not None or args.allow_exact_match
                          or args.batch_size != 1 or args.attn_implementation is not None))
         args.output_path = os.path.join(args.results_dir, filename)
+
+    if args.skip_if_complete:
+        targets = [args.output_path]
+        if args.judge_output_path:
+            targets.append(args.judge_output_path)
+        if all(os.path.exists(path) for path in targets):
+            print(f"skip-if-complete: {', '.join(targets)} already present; nothing to do")
+            return
 
     # Run ICL inference
     results = run_icl_inference(
