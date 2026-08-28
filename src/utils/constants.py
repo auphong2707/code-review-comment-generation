@@ -112,6 +112,20 @@ WEIGHT_DECAY_QWEN25_0_5B         = 0.01
 
 
 
+# [5b. QWEN Qwen-2.5-Coder-14B-Instruct HYPERPARAMETERS (revision, D-022)]
+#-------------------------------------------------------------------------
+MODEL_QWEN25_14B                = "Qwen/Qwen2.5-Coder-14B-Instruct"
+TOKENIZER_QWEN25_14B            = MODEL_QWEN25_14B
+RESULTS_DIR_QWEN25_14B          = RESULTS_DIR + "qwen25-14b/"
+
+TRAIN_BATCH_SIZE_QWEN25_14B     = 1
+EVAL_BATCH_SIZE_QWEN25_14B      = 1
+NUM_TRAIN_EPOCHS_QWEN25_14B     = 3
+WEIGHT_DECAY_QWEN25_14B         = 0.01
+#-------------------------------------------------------------------------
+
+
+
 # [6. PEFT HYPERPARAMETERS]
 #-------------------------------------------------------------------------
 NUM_VIRTUAL_TOKENS          = 100

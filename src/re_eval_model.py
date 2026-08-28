@@ -57,7 +57,7 @@ def main(model_directory, model_name, model_method, test_dataset_directory,
             attention_mask = torch.tensor([batch['attention_mask']]).to(model.device)
             
             # For causal LM models (Qwen), we need to handle differently
-            if model_name in ["qwen15", "qwen25", "qwen25-0.5b-instruct"]:
+            if model_name in ["qwen15", "qwen25", "qwen25-0.5b-instruct", "qwen25-14b"]:
                 # Find the length of the input to extract only the generated part
                 input_length = len(batch['input_ids'])
 
@@ -187,10 +187,11 @@ if __name__ == "__main__":
     parser.add_argument('--model_directory', type=str, required=True,
                        help='Directory containing the trained model files')
     parser.add_argument('--model_name', type=str, required=True,
-                       choices=['codet5', 'plbart', 'qwen15', 'qwen25', 'qwen25-0.5b-instruct', 'qwen25-0.5b'],
+                       choices=['codet5', 'plbart', 'qwen15', 'qwen25', 'qwen25-0.5b-instruct',
+                                'qwen25-0.5b', 'qwen25-14b', 'qwen25_14b'],
                        help='Name of the model architecture')
     parser.add_argument('--model_method', type=str, required=True,
-                       choices=['fmft', 'lora', 'qlora', 'ia3'],
+                       choices=['fmft', 'lora', 'qlora', 'ia3', 'dora', 'galore'],
                        help='Training method used for the model')
     parser.add_argument('--test_dataset_directory', type=str, default=None,
                        help='Path to test dataset JSONL file (default: from the --dataset registry)')

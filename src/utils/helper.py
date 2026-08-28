@@ -19,10 +19,11 @@ from .constants import get_dataset_config, is_placeholder_repo
 MODEL_NAME_ALIASES = {
     "qwen25-0.5b": "qwen25-0.5b-instruct",
     "qwen25_0.5b": "qwen25-0.5b-instruct",
+    "qwen25_14b": "qwen25-14b",
 }
 
 SEQ2SEQ_MODELS = ("codet5", "plbart")
-CAUSAL_MODELS = ("qwen15", "qwen25", "qwen25-0.5b-instruct")
+CAUSAL_MODELS = ("qwen15", "qwen25", "qwen25-0.5b-instruct", "qwen25-14b")
 
 _DATASET_FEATURES = {
     "trans_review": lambda: Features({
@@ -353,8 +354,9 @@ def load_model_and_tokenizer(model_directory, model_name, model_method):
     # 1. Load the tokenizer first
     tokenizer = AutoTokenizer.from_pretrained(model_directory)
 
-    # 2. Load the pretrained model from directory in case the method is FMFT
-    if model_method == "fmft":
+    # 2. Load the pretrained model from directory in case the method is a
+    #    full-model one (FMFT, or GaLore full-parameter FT)
+    if model_method in ("fmft", "galore"):
         if model_name in SEQ2SEQ_MODELS:
             model = AutoModelForSeq2SeqLM.from_pretrained(model_directory)
         elif model_name in CAUSAL_MODELS:

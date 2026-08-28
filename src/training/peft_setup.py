@@ -67,7 +67,7 @@ def build_generation_config(spec, ctx):
     return GenerationConfig(**resolve_markers(spec["generation_config"], ctx))
 
 
-def build_training_args(spec, ctx, smoke=False):
+def build_training_args(spec, ctx, smoke=False, overrides=None):
     import transformers
 
     cls = getattr(transformers, spec["training_args_class"])
@@ -75,6 +75,11 @@ def build_training_args(spec, ctx, smoke=False):
 
     if "<GENERATION_CONFIG>" in ctx and kwargs.get("generation_config") == "<GENERATION_CONFIG>":
         kwargs["generation_config"] = ctx["<GENERATION_CONFIG>"]
+
+    if "deepspeed" in kwargs and kwargs["deepspeed"] is None:
+        # qwen15 non-FMFT specs carry deepspeed=None (KI-011); dropping the key
+        # is equivalent and avoids os.path.exists(None)
+        kwargs.pop("deepspeed")
 
     if "deepspeed" in kwargs:
         if smoke:
@@ -86,6 +91,9 @@ def build_training_args(spec, ctx, smoke=False):
                 "original ZeRO-3 json was never committed). Provide the file or run a "
                 "non-deepspeed combination."
             )
+
+    if overrides:
+        kwargs.update(overrides)
 
     if smoke:
         kwargs.update(

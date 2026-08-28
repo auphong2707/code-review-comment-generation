@@ -144,6 +144,7 @@ dependencies:
       - fonttools==4.59.2
       - frozenlist==1.7.0
       - fsspec==2025.3.0
+      - galore-torch==1.0
       - gitdb==4.0.12
       - gitpython==3.1.45
       - hf-xet==1.1.5
@@ -168,6 +169,7 @@ dependencies:
       - python-dotenv==1.1.1
       - pytz==2025.2
       - pyyaml==6.0.2
+      - rank-bm25==0.2.2
       - regex==2025.7.34
       - requests==2.32.4
       - rouge-score==0.1.2

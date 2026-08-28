@@ -17,9 +17,11 @@ if [ -z "$MODEL" ] || [ -z "$METHOD" ]; then
   echo "Usage:"
   echo "  SWEEP: $0 <model> <method> sweep <start_exp> <end_exp> [subset=1]"
   echo "  FIXED: $0 <model> <method> fixed <learning_rate> [subset=1]"
-  echo "Models: codet5, plbart, qwen15, qwen25, qwen25-0.5b"
-  echo "Methods: fmft, ia3, lora, qlora, ptuning"
+  echo "Models: codet5, plbart, qwen15, qwen25, qwen25-0.5b, qwen25-14b"
+  echo "Methods: fmft, ia3, lora, qlora, ptuning, dora, galore"
   echo "Env: TRAIN_DRY_RUN=1 to print the resolved config without training"
+  echo "     TRAIN_EXTRA_ARGS to forward extra src.train flags, e.g."
+  echo "     TRAIN_EXTRA_ARGS=\"--dataset trans_review --seed 1 --results-root assets/results/revision/trans_review/\""
   exit 1
 fi
 
@@ -40,7 +42,7 @@ LOG_DIR="$(pwd)/assets/logs"
 mkdir -p "$WANDB_DIR" "$HF_HOME" "$LOG_DIR"
 
 case "$MODEL" in
-  "codet5"|"plbart"|"qwen15"|"qwen25"|"qwen25-0.5b") ;;
+  "codet5"|"plbart"|"qwen15"|"qwen25"|"qwen25-0.5b"|"qwen25-14b") ;;
   *) echo "Invalid model: $MODEL"; exit 1 ;;
 esac
 
@@ -48,6 +50,9 @@ esac
 BASE_CMD="python -m src.train --model \"$MODEL\" --method \"$METHOD\""
 if [ -n "$TRAIN_DRY_RUN" ]; then
   BASE_CMD="$BASE_CMD --dry-run"
+fi
+if [ -n "${TRAIN_EXTRA_ARGS:-}" ]; then
+  BASE_CMD="$BASE_CMD $TRAIN_EXTRA_ARGS"
 fi
 
 run_single() {

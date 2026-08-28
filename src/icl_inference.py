@@ -98,7 +98,8 @@ def load_base_model_and_tokenizer(model_name: str):
         "plbart": (MODEL_PLBART, TOKENIZER_PLBART),
         "qwen15": (MODEL_QWEN15, TOKENIZER_QWEN15),
         "qwen25": (MODEL_QWEN25, TOKENIZER_QWEN25),
-        "qwen25-0.5b": (MODEL_QWEN25_0_5B, TOKENIZER_QWEN25_0_5B)
+        "qwen25-0.5b": (MODEL_QWEN25_0_5B, TOKENIZER_QWEN25_0_5B),
+        "qwen25-14b": (MODEL_QWEN25_14B, TOKENIZER_QWEN25_14B),
     }
     
     if model_name not in model_mapping:
@@ -114,7 +115,7 @@ def load_base_model_and_tokenizer(model_name: str):
     # Load model based on type
     if model_name in ["codet5", "plbart"]:
         model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
-    elif model_name in ["qwen15", "qwen25", "qwen25-0.5b"]:
+    elif model_name in ["qwen15", "qwen25", "qwen25-0.5b", "qwen25-14b"]:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
@@ -597,7 +598,7 @@ def main():
     
     # Model arguments
     parser.add_argument("--model_name", type=str, required=True,
-                       choices=["codet5", "plbart", "qwen15", "qwen25", "qwen25-0.5b"],
+                       choices=["codet5", "plbart", "qwen15", "qwen25", "qwen25-0.5b", "qwen25-14b"],
                        help="Name of the model to use")
     
     # ICL arguments

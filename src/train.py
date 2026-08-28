@@ -26,7 +26,8 @@ from src.training.registry import get_spec, resolve_run, supported_methods, supp
 def build_parser():
     parser = argparse.ArgumentParser(description="Unified training entry point")
     parser.add_argument("--model", required=True,
-                        choices=supported_models() + ["qwen25-0.5b-instruct", "qwen25_0.5b"],
+                        choices=supported_models() + ["qwen25-0.5b-instruct", "qwen25_0.5b",
+                                                      "qwen25_14b"],
                         help="Model to train")
     parser.add_argument("--method", required=True,
                         choices=supported_methods() + ["ptuning_v2"],
@@ -40,10 +41,43 @@ def build_parser():
     parser.add_argument("--dataset", type=str, default=None,
                         choices=["trans_review", "acra_by_ls_pt"],
                         help="Dataset to train on (default: constants.DATASET_NAME)")
+    parser.add_argument("--protocol", choices=["archived", "head"], default="archived",
+                        help="Training protocol for TransReview runs: 'archived' replicates the "
+                             "produced TR artifacts (D-025 overrides), 'head' keeps the spec "
+                             "values. CodeReviewer runs are never affected.")
+    parser.add_argument("--pin-peft-defaults", dest="pin_peft_defaults",
+                        action=argparse.BooleanOptionalAction, default=None,
+                        help="Pin archived PEFT module resolutions for reruns (e.g. codet5-IA3 "
+                             "['v','wo','k']/['wo'] on TransReview, KI-015). Default: on for "
+                             "--protocol archived, off for head.")
+    parser.add_argument("--galore-variant", dest="galore_variant", default=None,
+                        choices=["galore_adamw", "galore_adamw_8bit", "galore_adamw_8bit_layerwise"],
+                        help="Override the GaLore optimizer variant (galore method only; e.g. "
+                             "8bit_layerwise if 80 GB is exceeded — recorded via the overrides)")
+    parser.add_argument("--gen-batch-size", dest="gen_batch_size", type=int, default=1,
+                        help="Batch size for validation/test generation (1 = legacy per-sample "
+                             "loops; D-028c)")
+    parser.add_argument("--eval-max-samples", dest="eval_max_samples", type=int, default=None,
+                        help="Cap the validation set used for per-epoch generation (recorded in "
+                             "resources; never for seed replicates). Under --smoke it sizes the "
+                             "test set instead (batched-equivalence instrument).")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Non-default seed: seeds the run and suffixes the "
+                             "experiment name with _seed<N> (default: legacy seed 42, no suffix)")
+    parser.add_argument("--results-root", dest="results_root", default=None,
+                        help="Root dir for the experiment dir (e.g. per-dataset revision roots); "
+                             "default: the legacy per-model results_dir")
+    parser.add_argument("--skip-if-complete", dest="skip_if_complete", action="store_true",
+                        help="Exit 0 immediately when complete_results.json already exists "
+                             "(idempotent campaign re-submission)")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true",
                         help="Print the resolved configuration as JSON and exit (no torch)")
     parser.add_argument("--smoke", action="store_true",
                         help="Tiny offline run: max_steps=2, capped datasets, no upload")
+    parser.add_argument("--probe", action="store_true",
+                        help="Memory probe: one forward/backward/optimizer step at the real "
+                             "batch size on 8 real samples, print peak VRAM + timing, exit "
+                             "(no checkpoint; sizes 14B/GaLore runs before a sweep)")
     parser.add_argument("--attn-implementation", dest="attn_implementation", default=None,
                         help="Override attn_implementation (e.g. sdpa when flash-attn is unavailable)")
     parser.add_argument("--data_dir", dest="data_dir", default=None,
@@ -51,11 +85,20 @@ def build_parser():
     return parser
 
 
+def resolve_protocol_overrides(model, args):
+    from src.training.protocols import overrides_for
+    from src.utils.constants import DATASET_NAME
+
+    return overrides_for(args.dataset or DATASET_NAME, model, args.protocol)
+
+
 def dry_run_payload(model, method, spec, args):
     lr = args.learning_rate if args.learning_rate is not None else 5e-05
     experiment_id = args.experiment_id if args.experiment_id is not None else 0
-    official = resolve_run(spec, learning_rate=lr)
-    sweep = resolve_run(spec, experiment_id=experiment_id)
+    official = resolve_run(spec, learning_rate=lr, seed=args.seed,
+                           results_root=args.results_root)
+    sweep = resolve_run(spec, experiment_id=experiment_id, seed=args.seed,
+                        results_root=args.results_root)
     return {
         "model": model,
         "method": method,
@@ -63,6 +106,7 @@ def dry_run_payload(model, method, spec, args):
         "experiment_name_sweep": sweep["experiment_name"],
         "experiment_results_dir": official["experiment_results_dir"],
         "spec": spec,
+        "protocol_overrides": resolve_protocol_overrides(model, args),
     }
 
 
@@ -75,10 +119,29 @@ def main(argv=None):
         return
 
     if args.learning_rate is None and args.experiment_id is None:
-        raise SystemExit("error: provide --learning_rate (official) or --experiment_id (sweep)")
+        if args.smoke or args.probe:
+            args.learning_rate = 5e-05
+        else:
+            raise SystemExit("error: provide --learning_rate (official) or --experiment_id (sweep)")
 
-    if args.smoke:
+    if args.smoke or args.probe:
         os.environ.setdefault("WANDB_MODE", "offline")
+
+    if args.probe and args.results_root is None:
+        # never touch (or resume from) the real experiment dir for a probe
+        import tempfile
+
+        args.results_root = tempfile.mkdtemp(prefix="train-probe-")
+
+    run_info = resolve_run(spec, experiment_id=args.experiment_id,
+                           learning_rate=args.learning_rate,
+                           seed=args.seed, results_root=args.results_root)
+
+    if args.skip_if_complete and os.path.exists(
+            os.path.join(run_info["experiment_results_dir"], "complete_results.json")):
+        print(f"skip-if-complete: {run_info['experiment_results_dir']} already has "
+              "complete_results.json — nothing to do")
+        return
 
     if args.data_dir:
         # Point the dataset registry at an alternate data directory (smoke runs
@@ -94,18 +157,30 @@ def main(argv=None):
 
     from src.utils.helper import set_seed
 
-    set_seed()
-
-    run_info = resolve_run(spec, experiment_id=args.experiment_id,
-                           learning_rate=args.learning_rate)
+    set_seed() if args.seed is None else set_seed(args.seed)
 
     if spec["family"] == "causal":
         from src.training.causal_runner import run
     else:
         from src.training.seq2seq_runner import run
 
+    protocol_overrides = resolve_protocol_overrides(model, args)
+    if args.galore_variant and method == "galore":
+        protocol_overrides["optim"] = args.galore_variant
+
+    from src.training.specs_revision import peft_pin_for
+    from src.utils.constants import DATASET_NAME
+
+    pin_enabled = (args.pin_peft_defaults if args.pin_peft_defaults is not None
+                   else args.protocol == "archived")
+    peft_overrides = (peft_pin_for(args.dataset or DATASET_NAME, model, method)
+                      if pin_enabled else {})
+
     run(model, method, spec, run_info, subset=args.subset, dataset_name=args.dataset,
-        smoke=args.smoke, attn_implementation=args.attn_implementation)
+        smoke=args.smoke, attn_implementation=args.attn_implementation, seed=args.seed,
+        protocol=args.protocol, protocol_overrides=protocol_overrides,
+        gen_batch_size=args.gen_batch_size, eval_max_samples=args.eval_max_samples,
+        peft_overrides=peft_overrides, probe=args.probe)
 
 
 if __name__ == "__main__":
