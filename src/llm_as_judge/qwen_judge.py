@@ -163,9 +163,16 @@ class QwenJudge:
             )
         return "\n\n".join(f"{item['role']}: {item['content']}" for item in messages) + "\nassistant:"
 
+    def _check_input_budget(self, inputs):
+        limit = self.config.input_token_limit
+        if limit is not None and inputs["input_ids"].shape[-1] > limit:
+            raise ValueError(f"Judge input exceeds qualified {limit}-token budget; re-probe a larger budget")
+
     def _generate_from_prompts(self, prompts: list[str], *, deterministic: bool = False,
                                run_index: int = 0) -> list[str]:
-        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt").to(self._device())
+        inputs = self.tokenizer(prompts, padding=True, return_tensors="pt")
+        self._check_input_budget(inputs)
+        inputs = inputs.to(self._device())
         input_length = inputs["input_ids"].shape[1]
 
         kwargs = {
@@ -264,6 +271,9 @@ class QwenJudge:
                     uncached.append((record_index, key, normalized))
 
             for start in range(0, len(uncached), self.config.batch_size):
+                if self.config.input_token_limit is not None:
+                    from src.training.recovery import stop_if_requested
+                    stop_if_requested()
                 batch = uncached[start:start + self.config.batch_size]
                 batch_records = [item[2] for item in batch]
                 raw_outputs = self._generate_batch(batch_records, run_index=run_index)

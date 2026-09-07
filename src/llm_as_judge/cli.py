@@ -81,6 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-local-files-only", action="store_true")
     parser.add_argument("--judge-device", default=JudgeConfig.device,
                         help="Judge device: cuda, cuda:N, cpu, or auto (default: cuda)")
+    parser.add_argument("--judge-input-token-limit", type=int, default=None,
+                        help="Fail before GPU generation above this qualified token budget; no truncation")
     parser.add_argument("--judge-batch-size", type=int, default=JudgeConfig.batch_size,
                         help="Number of judge records to generate per batch")
     parser.add_argument("--judge-temperature", type=float, default=JudgeConfig.temperature)
@@ -119,6 +121,7 @@ def config_from_args(args) -> JudgeConfig:
         local_files_only=args.judge_local_files_only,
         device=args.judge_device,
         batch_size=args.judge_batch_size,
+        input_token_limit=getattr(args, "judge_input_token_limit", None),
         code_column=args.code_column,
         prediction_column=args.prediction_column,
         reference_column=args.reference_column,

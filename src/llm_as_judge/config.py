@@ -21,6 +21,7 @@ class JudgeConfig:
     device: str = "cuda"
     batch_size: int = 1
     max_code_chars: int = 12000
+    input_token_limit: Optional[int] = None  # admission guard only; never truncates or changes cache keys
     code_column: Optional[str] = None
     prediction_column: Optional[str] = None
     reference_column: Optional[str] = None
@@ -50,6 +51,8 @@ class JudgeConfig:
             raise ValueError("top_p must be in (0, 1]")
         if self.max_code_chars < 1:
             raise ValueError("max_code_chars must be at least 1")
+        if self.input_token_limit is not None and self.input_token_limit < 1:
+            raise ValueError("input_token_limit must be positive")
         if self.batch_size < 1:
             raise ValueError("batch_size must be at least 1")
         if self.device != "auto" and self.device != "cpu" and not self.device.startswith("cuda"):

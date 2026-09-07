@@ -384,6 +384,9 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
     # Load model and tokenizer
     print(f"Loading {model_name} model...")
     model, tokenizer = load_base_model_and_tokenizer(model_name, attn_implementation)
+    if memory_profile and any(device in ("cpu", "disk")
+                              for device in getattr(model, "hf_device_map", {}).values()):
+        raise RuntimeError("A5000 ICL cannot silently offload the subject model")
     if prompt_version == "v2":
         # an overflowing prompt keeps the test turn, not the oldest demos
         tokenizer.truncation_side = "left"

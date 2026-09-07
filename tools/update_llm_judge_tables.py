@@ -328,6 +328,8 @@ def score_manifest(manifest_rows: Iterable[Mapping], config: JudgeConfig) -> Non
                             f"judge returned {len(judge_results)} results for {len(batch)} rows"
                         )
                 except Exception as exc:
+                    if config.input_token_limit is not None:
+                        raise  # qualified campaign failures must never become successful NaN rows
                     LOGGER.warning(
                         "Batch judge failed for %s samples=%s-%s: %s",
                         job["job_id"],
@@ -437,6 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-local-files-only", action="store_true")
     parser.add_argument("--judge-device", default="cuda",
                         help="Judge device: cuda, cuda:N, cpu, or auto (default: cuda)")
+    parser.add_argument("--judge-input-token-limit", type=int, default=None,
+                        help="Fail before GPU generation above this qualified token budget; no truncation")
     parser.add_argument("--judge-batch-size", type=int, default=1,
                         help="Number of judge records to generate per batch")
     parser.add_argument("--mock", action="store_true", help="Use deterministic mock judge scores")
@@ -544,6 +548,7 @@ def main() -> None:
         local_files_only=args.judge_local_files_only,
         device=args.judge_device,
         batch_size=args.judge_batch_size,
+        input_token_limit=getattr(args, "judge_input_token_limit", None),
         code_column="code_or_diff",
         prediction_column="prediction",
         reference_column="reference",
@@ -555,6 +560,9 @@ def main() -> None:
         seed=args.judge_seed,
     )
 
+    if config.input_token_limit is not None:
+        from src.training.recovery import install_stop_handlers
+        install_stop_handlers()
     score_manifest(manifest_rows, config)
     summary_path = write_summary(out_root, manifest_rows, args.job_group, args.column_prefix)
     LOGGER.info("Done. Summary: %s", summary_path)

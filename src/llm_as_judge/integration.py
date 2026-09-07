@@ -45,6 +45,8 @@ def add_judge_arguments(parser):
                         help="Optional result/raw column to use as judge reference")
     parser.add_argument("--judge-device", dest="judge_device", default=JudgeConfig.device,
                         help="Judge device: cuda, cuda:N, cpu, or auto (default: cuda)")
+    parser.add_argument("--judge-input-token-limit", type=int, default=None,
+                        help="Fail before GPU generation above this qualified token budget; no truncation")
     parser.add_argument("--judge-batch-size", dest="judge_batch_size", type=int,
                         default=JudgeConfig.batch_size,
                         help="Number of judge records to generate per batch")
@@ -77,6 +79,7 @@ def build_judge_config(args):
         local_files_only=args.judge_local_files_only,
         device=args.judge_device,
         batch_size=args.judge_batch_size,
+        input_token_limit=getattr(args, "judge_input_token_limit", None),
         mock=args.judge_mock,
         repair_retry=args.judge_repair_retry,
         emit_debug_columns=args.judge_emit_debug,
