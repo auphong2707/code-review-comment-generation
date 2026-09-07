@@ -92,7 +92,8 @@ def test_actual_trainer_interrupted_resume_matches_continuous(tmp_path, monkeypa
         torch.testing.assert_close(resumed.model.state_dict()[name], expected, rtol=0, atol=0)
 
 
-def test_epoch_boundary_stop_keeps_validation_and_best_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("strategy,target", [("epoch", 2), ("steps", 1)])
+def test_epoch_boundary_stop_keeps_validation_and_best_model(tmp_path, monkeypatch, strategy, target):
     import torch
     from transformers import GPT2Config, GPT2LMHeadModel, Trainer, TrainingArguments, TrainerCallback
     monkeypatch.setattr(recovery, "_stop_requested", False)
@@ -100,7 +101,7 @@ def test_epoch_boundary_stop_keeps_validation_and_best_model(tmp_path, monkeypat
     data = [{"input_ids": torch.tensor([1, 2, 3]), "labels": torch.tensor([1, 2, 3])} for _ in range(2)]
     args = TrainingArguments(output_dir=str(tmp_path), num_train_epochs=2,
                              per_device_train_batch_size=1, per_device_eval_batch_size=1,
-                             save_strategy="epoch", eval_strategy="epoch", load_best_model_at_end=True,
+                             save_strategy=strategy, eval_strategy=strategy, eval_steps=1, save_steps=1, load_best_model_at_end=True,
                              metric_for_best_model="loss", greater_is_better=False,
                              report_to="none", use_cpu=True, disable_tqdm=True)
     class StopAtBoundary(TrainerCallback):
@@ -109,14 +110,14 @@ def test_epoch_boundary_stop_keeps_validation_and_best_model(tmp_path, monkeypat
                 recovery.request_stop()
     cls = recovery.recovery_trainer_class(Trainer)
     model = GPT2LMHeadModel(GPT2Config(vocab_size=8, n_positions=4, n_embd=8, n_layer=1, n_head=1))
-    trainer = cls(model=model, args=args, train_dataset=data, eval_dataset=data, callbacks=[StopAtBoundary()])
-    recovery.attach_recovery(trainer, 1)
+    trainer = cls(model=model, args=args, train_dataset=data, eval_dataset=data, callbacks=[])
+    recovery.attach_recovery(trainer, 1, stop_after_step=target)
     with pytest.raises(SystemExit) as exc:
         trainer.train()
     assert exc.value.code == 75
     path = recovery.latest_recovery_checkpoint(tmp_path)
     state = json.loads((Path(path) / "trainer_state.json").read_text())
-    assert state["global_step"] == 2
+    assert state["global_step"] == target
     assert state["best_metric"] is not None
     assert any("eval_loss" in entry for entry in state["log_history"])
     monkeypatch.setattr(recovery, "_stop_requested", False)

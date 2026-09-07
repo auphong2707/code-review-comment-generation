@@ -79,6 +79,10 @@ def build_parser():
                         help="Print the resolved configuration as JSON and exit (no torch)")
     parser.add_argument("--smoke", action="store_true",
                         help="Tiny offline run: max_steps=2, capped datasets, no upload")
+    parser.add_argument("--lifecycle-probe", action="store_true",
+                        help="A5000 only: two optimizer steps, validation, save/reload and test pilot")
+    parser.add_argument("--probe-stop-after-step", type=int, default=None,
+                        help="Lifecycle probe only: simulate allocation stop after a committed step")
     parser.add_argument("--probe", action="store_true",
                         help="Memory probe: one forward/backward/optimizer step at the real "
                              "batch size on 8 real samples, print peak VRAM + timing, exit "
@@ -118,6 +122,11 @@ def dry_run_payload(model, method, spec, args):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     model, method, spec = get_spec(args.model, args.method)
+    if args.lifecycle_probe and (not args.memory_profile or args.probe or args.smoke):
+        raise SystemExit("--lifecycle-probe requires --memory-profile and excludes --probe/--smoke")
+    if args.probe_stop_after_step is not None and (
+            not args.lifecycle_probe or args.probe_stop_after_step not in (1, 2)):
+        raise SystemExit("--probe-stop-after-step requires a lifecycle probe and step 1 or 2")
     if args.recovery_steps < 1:
         raise SystemExit("--recovery-steps must be positive")
     if args.memory_profile:
@@ -143,7 +152,7 @@ def main(argv=None):
         return
 
     if args.learning_rate is None and args.experiment_id is None:
-        if args.smoke or args.probe:
+        if args.smoke or args.probe or args.lifecycle_probe:
             args.learning_rate = 5e-05
         else:
             raise SystemExit("error: provide --learning_rate (official) or --experiment_id (sweep)")
@@ -165,6 +174,8 @@ def main(argv=None):
     from src.training.recovery import RunLock, bind_identity, file_digest, install_stop_handlers
     recover = bool(args.memory_profile and not (args.probe or args.smoke))
     run_dir = Path(run_info["experiment_results_dir"])
+    run_info["lifecycle_probe"] = args.lifecycle_probe
+    run_info["probe_stop_after_step"] = args.probe_stop_after_step
     with (RunLock(run_dir / "run.lock") if recover else nullcontext()):
         if recover:
             from src.utils.constants import DATASET_CONFIGS, DATASET_NAME
@@ -179,6 +190,7 @@ def main(argv=None):
                 "subset": args.subset, "eval_max_samples": args.eval_max_samples,
                 "gen_batch_size": args.gen_batch_size, "memory_profile": args.memory_profile,
                 "attention": args.attn_implementation, "pin_peft_defaults": args.pin_peft_defaults,
+                "lifecycle_probe": args.lifecycle_probe,
             }
             if not (run_dir / "run_identity.json").exists() and (
                     (run_dir / "complete_results.json").exists() or list(run_dir.glob("checkpoint-*"))):

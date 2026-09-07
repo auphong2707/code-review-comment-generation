@@ -177,7 +177,14 @@ class RecoveryMixin:
             super()._save_checkpoint(model, trial, *args, **kwargs)
             files = {str(p.relative_to(path)): p.stat().st_size
                      for p in path.rglob("*") if p.is_file()}
-            atomic_json(marker, {"global_step": self.state.global_step, "files": files})
+            import torch
+            peaks = {
+                "peak_vram_allocated_gb": max((torch.cuda.max_memory_allocated(i) / 2**30
+                                               for i in range(torch.cuda.device_count())), default=0),
+                "peak_vram_reserved_gb": max((torch.cuda.max_memory_reserved(i) / 2**30
+                                              for i in range(torch.cuda.device_count())), default=0),
+            }
+            atomic_json(marker, {"global_step": self.state.global_step, "files": files, **peaks})
             if not valid_checkpoint(path):
                 marker.unlink(missing_ok=True)
                 raise RuntimeError(f"Incomplete full-state checkpoint: {path}")
@@ -196,7 +203,7 @@ def recovery_trainer_class(base):
     return type("Recoverable" + base.__name__, (RecoveryMixin, base), {})
 
 
-def attach_recovery(trainer, every_steps=100):
+def attach_recovery(trainer, every_steps=100, stop_after_step=None):
     from transformers import TrainerCallback
     if every_steps < 1:
         raise ValueError("Recovery interval must be positive")
@@ -205,6 +212,10 @@ def attach_recovery(trainer, every_steps=100):
 
     class RecoveryCallback(TrainerCallback):
         def on_step_end(self, args, state, control, **kwargs):
+            if stop_after_step is not None and state.global_step >= stop_after_step:
+                request_stop()
+            if control.should_evaluate:
+                return control  # step-evaluation probes must commit their evaluated state too
             # Trainer evaluates epochs AFTER this callback. Never publish a recovery
             # point that would make resume skip an as-yet unevaluated epoch.
             at_epoch_end = state.epoch is not None and abs(state.epoch - round(state.epoch)) < 1e-8

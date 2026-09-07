@@ -59,6 +59,9 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     from .recovery import (latest_recovery_checkpoint, recovery_trainer_class,
                            attach_recovery, PredictionJournal, stop_if_requested, atomic_json, generation_identity, model_revision)
     recover = run_info.get("recovery", False)
+    lifecycle = run_info.get("lifecycle_probe", False)
+    if lifecycle:
+        OUTPUT_MIN_LENGTH = OUTPUT_MAX_LENGTH  # worst output-length pilot, probe only
     if recover:
         latest_checkpoint = latest_recovery_checkpoint
 
@@ -98,6 +101,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         test_ds = test_ds.select(range(min(eval_max_samples or 2, len(test_ds))))
     elif eval_max_samples is not None:
         val_ds = val_ds.select(range(min(eval_max_samples, len(val_ds))))
+    if lifecycle:
+        # Dataset preparation uses fixed padded training lengths; retain enough
+        # microbatches to exercise two full accumulated optimizer updates.
+        pilot_train_rows = max(8, 2 * (protocol_overrides or {}).get("gradient_accumulation_steps", 1))
+        train_ds = train_ds.select(range(min(pilot_train_rows, len(train_ds))))
+        val_ds = val_ds.select(range(min(2, len(val_ds))))
+        test_ds = test_ds.select(range(min(2, len(test_ds))))
     add_tokenizer_markers(ctx, tokenizer)
 
     # ------------------------------------------------------------------
@@ -205,6 +215,10 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     overrides = dict(protocol_overrides or {})
     if seed is not None:
         overrides.update(seed=seed, data_seed=seed)
+    if lifecycle:
+        overrides.update(max_steps=2, eval_strategy="steps", eval_steps=1,
+                         save_strategy="steps", save_steps=1, report_to="none",
+                         load_best_model_at_end=True)
     if probe:
         # one real-batch-size step, nothing persisted (--probe, phase 07)
         overrides.update(max_steps=1, eval_strategy="no", save_strategy="no",
@@ -240,9 +254,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         trainer.recovery_model_revision = model_revision(
             experiment_results_dir, spec["model_id"], getattr(model.config, "_commit_hash", None),
             resumed=bool(ckpt_path))
-        attach_recovery(trainer, recovery_steps)
+        attach_recovery(trainer, recovery_steps, run_info.get("probe_stop_after_step"))
         stop_if_requested()
 
+    resumed_from_step = 0
+    if recover and ckpt_path:
+        with open(os.path.join(ckpt_path, "trainer_state.json")) as state_file:
+            resumed_from_step = json.load(state_file)["global_step"]
     train_result = (trainer.train(resume_from_checkpoint=ckpt_path) if ckpt_path
                     else trainer.train())
 
@@ -393,7 +411,8 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
 
     if memory_profile:
         complete_results["resources"].update(
-            memory_profile=memory_profile,
+            memory_profile=memory_profile, lifecycle_probe=lifecycle,
+            resumed_from_step=resumed_from_step, global_step=trainer.state.global_step,
             metric_device="cpu", metric_batch_size=1,
             train_microbatch=training_args.per_device_train_batch_size,
             eval_microbatch=training_args.per_device_eval_batch_size,
