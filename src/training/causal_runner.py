@@ -18,7 +18,7 @@ import time
 def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         smoke=False, attn_implementation=None, seed=None, protocol="archived",
         protocol_overrides=None, gen_batch_size=1, eval_max_samples=None,
-        peft_overrides=None, probe=False):
+        peft_overrides=None, probe=False, memory_profile=None):
     import huggingface_hub
     import torch
     import wandb
@@ -50,6 +50,10 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         load_base_model,
         static_marker_context,
     )
+
+    from src.evaluation.metrics import configure_metric_resources
+    configure_metric_resources(device="cpu" if memory_profile else None,
+                               batch_size=1 if memory_profile else None)
 
     experiment_name = run_info["experiment_name"]
     experiment_results_dir = run_info["experiment_results_dir"]
@@ -120,24 +124,19 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
             model = get_peft_model(base_model, lora_cfg)
             if ckpt_path:
                 print(f"Resuming from checkpoint: {ckpt_path}")
-                try:
-                    model.load_adapter(ckpt_path, adapter_name="default")
-                    model.set_adapter("default")
-                    print("Successfully loaded LoRA adapter from checkpoint")
-                except Exception as e:
-                    print(f"Warning: Could not load adapter from checkpoint: {e}")
-                    print("Continuing with fresh LoRA model...")
+                model.load_adapter(ckpt_path, adapter_name="default", is_trainable=True)
+                model.set_adapter("default")
             for name, param in model.named_parameters():
                 if "lora_" in name.lower() and param.requires_grad:
                     param.requires_grad_(True)
 
         elif method == "qlora":
+            base_model = prepare_model_for_kbit_training(base_model)
             if ckpt_path:
                 print(f"Resuming from checkpoint: {ckpt_path}")
                 model = PeftModel.from_pretrained(base_model, ckpt_path, is_trainable=True)
             else:
-                model = prepare_model_for_kbit_training(base_model)
-                model = get_peft_model(model, build_peft_config(spec, ctx))
+                model = get_peft_model(base_model, build_peft_config(spec, ctx))
             if spec["grad_checkpoint_enable"]:
                 model.gradient_checkpointing_enable()
 
@@ -181,6 +180,12 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
             raise ValueError("No trainable parameters found! This will cause the gradient error.")
         wandb.config.update({"trainable_params": trainable_count}, allow_val_change=True)
         print(f"Trainable parameters: {trainable_count/1e6:.2f} M")
+
+    if memory_profile:
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -354,6 +359,18 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         eval_max_samples=eval_max_samples, gen_batch_size=gen_batch_size,
         results_dir=experiment_results_dir,
     )
+
+    if memory_profile:
+        complete_results["resources"].update(
+            memory_profile=memory_profile,
+            metric_device="cpu", metric_batch_size=1,
+            train_microbatch=training_args.per_device_train_batch_size,
+            eval_microbatch=training_args.per_device_eval_batch_size,
+            gradient_accumulation_steps=training_args.gradient_accumulation_steps,
+            gradient_checkpointing=training_args.gradient_checkpointing,
+            gradient_checkpointing_kwargs=training_args.gradient_checkpointing_kwargs,
+            attn_implementation=attn_implementation,
+        )
 
     with open(f"{experiment_results_dir}/training_args.txt", "w") as f:
         f.write(str(training_args))

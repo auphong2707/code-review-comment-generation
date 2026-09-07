@@ -54,6 +54,8 @@ def build_parser():
                         choices=["galore_adamw", "galore_adamw_8bit", "galore_adamw_8bit_layerwise"],
                         help="Override the GaLore optimizer variant (galore method only; e.g. "
                              "8bit_layerwise if 80 GB is exceeded — recorded via the overrides)")
+    parser.add_argument("--memory-profile", choices=["a5000"], default=None,
+                        help="Opt-in 24 GB profile; requires an isolated --results-root and target GPU probes")
     parser.add_argument("--gen-batch-size", dest="gen_batch_size", type=int, default=1,
                         help="Batch size for validation/test generation (1 = legacy per-sample "
                              "loops; D-028c)")
@@ -113,9 +115,26 @@ def dry_run_payload(model, method, spec, args):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     model, method, spec = get_spec(args.model, args.method)
+    if args.memory_profile:
+        if not args.results_root and not args.probe:
+            raise SystemExit("--memory-profile requires an isolated --results-root")
+        if args.gen_batch_size != 1:
+            raise SystemExit("A5000 profile requires --gen-batch-size 1")
+        if args.attn_implementation not in (None, "sdpa"):
+            raise SystemExit("A5000 profile requires SDPA")
+        args.attn_implementation = "sdpa"
+        from src.training.memory_profile import apply_memory_profile
+        spec, profile_overrides = apply_memory_profile(
+            spec, resolve_protocol_overrides(model, args), args.memory_profile, model, method)
+    else:
+        profile_overrides = None
 
     if args.dry_run:
-        print(json.dumps(dry_run_payload(model, method, spec, args), indent=2))
+        payload = dry_run_payload(model, method, spec, args)
+        if profile_overrides is not None:
+            payload["protocol_overrides"] = profile_overrides
+            payload["memory_profile"] = args.memory_profile
+        print(json.dumps(payload, indent=2))
         return
 
     if args.learning_rate is None and args.experiment_id is None:
@@ -164,7 +183,8 @@ def main(argv=None):
     else:
         from src.training.seq2seq_runner import run
 
-    protocol_overrides = resolve_protocol_overrides(model, args)
+    protocol_overrides = (profile_overrides if profile_overrides is not None
+                          else resolve_protocol_overrides(model, args))
     if args.galore_variant and method == "galore":
         protocol_overrides["optim"] = args.galore_variant
 
@@ -180,7 +200,7 @@ def main(argv=None):
         smoke=args.smoke, attn_implementation=args.attn_implementation, seed=args.seed,
         protocol=args.protocol, protocol_overrides=protocol_overrides,
         gen_batch_size=args.gen_batch_size, eval_max_samples=args.eval_max_samples,
-        peft_overrides=peft_overrides, probe=args.probe)
+        peft_overrides=peft_overrides, probe=args.probe, memory_profile=args.memory_profile)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import time
 def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         smoke=False, attn_implementation=None, seed=None, protocol="archived",
         protocol_overrides=None, gen_batch_size=1, eval_max_samples=None,
-        peft_overrides=None, probe=False):
+        peft_overrides=None, probe=False, memory_profile=None):
     import huggingface_hub
     import torch
     import wandb
@@ -50,6 +50,10 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         load_base_model,
         static_marker_context,
     )
+
+    from src.evaluation.metrics import configure_metric_resources
+    configure_metric_resources(device="cpu" if memory_profile else None,
+                               batch_size=1 if memory_profile else None)
 
     experiment_name = run_info["experiment_name"]
     experiment_results_dir = run_info["experiment_results_dir"]
@@ -98,7 +102,7 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         base_model.generation_config.num_beams = NUM_BEAMS
         base_model.generation_config.max_new_tokens = OUTPUT_MAX_LENGTH
         if checkpoint:
-            model = PeftModel.from_pretrained(base_model, checkpoint)
+            model = PeftModel.from_pretrained(base_model, checkpoint, is_trainable=True)
             print(f"Resumed from checkpoint: {checkpoint}")
         else:
             model = get_peft_model(base_model, build_peft_config(spec, ctx))
@@ -107,27 +111,32 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         base_model = load()
         base_model.generation_config.num_beams = NUM_BEAMS
         base_model.generation_config.max_new_tokens = OUTPUT_MAX_LENGTH
-        if model_name == "plbart":
-            # legacy plbart_qlora runs kbit prep before the resume branch
-            base_model = prepare_model_for_kbit_training(base_model)
+        base_model = prepare_model_for_kbit_training(base_model)
         if checkpoint:
             model = PeftModel.from_pretrained(base_model, checkpoint, is_trainable=True)
             print(f"Resumed from checkpoint: {checkpoint}")
         else:
-            prepared = base_model if model_name == "plbart" else prepare_model_for_kbit_training(base_model)
-            model = get_peft_model(prepared, build_peft_config(spec, ctx))
+            model = get_peft_model(base_model, build_peft_config(spec, ctx))
         if spec["grad_checkpoint_enable"]:
             model.gradient_checkpointing_enable()
             model.enable_input_require_grads()
-    elif method in ("ia3", "ptuning"):
-        # legacy ia3/ptuning seq2seq scripts reload the base from the
-        # checkpoint dir when resuming, then wrap a fresh PEFT config
+    elif method == "ia3":
+        base_model = load()
+        model = (PeftModel.from_pretrained(base_model, checkpoint, is_trainable=True)
+                 if checkpoint else get_peft_model(base_model, build_peft_config(spec, ctx)))
+    elif method == "ptuning":
+        # Preserve this experimental legacy path; not admitted by the A5000 profile.
         model = load(checkpoint) if checkpoint else load()
-        if method == "ptuning":
-            ctx["<model.config.hidden_size>"] = model.config.hidden_size
+        ctx["<model.config.hidden_size>"] = model.config.hidden_size
         model = get_peft_model(model, build_peft_config(spec, ctx))
     else:
         raise ValueError(f"unknown seq2seq method: {method}")
+
+    if memory_profile:
+        model.config.use_cache = False
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
@@ -287,6 +296,18 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         eval_max_samples=eval_max_samples, gen_batch_size=gen_batch_size,
         results_dir=experiment_results_dir,
     )
+
+    if memory_profile:
+        complete_results["resources"].update(
+            memory_profile=memory_profile,
+            metric_device="cpu", metric_batch_size=1,
+            train_microbatch=training_args.per_device_train_batch_size,
+            eval_microbatch=training_args.per_device_eval_batch_size,
+            gradient_accumulation_steps=training_args.gradient_accumulation_steps,
+            gradient_checkpointing=training_args.gradient_checkpointing,
+            gradient_checkpointing_kwargs=training_args.gradient_checkpointing_kwargs,
+            attn_implementation=attn_implementation,
+        )
 
     with open(f"{experiment_results_dir}/training_args.txt", "w") as f:
         f.write(str(training_args))

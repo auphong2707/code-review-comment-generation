@@ -11,6 +11,19 @@ EMPTY_PLACEHOLDER = "<EMPTY>"
 
 _METRIC_NAMES = ("bleu", "exact_match", "rouge", "bertscore", "meteor")
 _metrics = {}
+_metric_resource_kwargs = {}
+
+
+def configure_metric_resources(*, device=None, batch_size=None):
+    """Explicit process-local resource policy; default metric calls stay unchanged."""
+    if batch_size is not None and batch_size < 1:
+        raise ValueError("Metric batch size must be positive")
+    _metric_resource_kwargs.clear()
+    if device is not None:
+        _metric_resource_kwargs["device"] = device
+    if batch_size is not None:
+        _metric_resource_kwargs["batch_size"] = batch_size
+
 
 
 def _metric(name):
@@ -54,6 +67,7 @@ def compute_generation_metrics(predictions, references):
         predictions=predictions,
         references=references,
         lang="en",
+        **_metric_resource_kwargs,
     )
     bertscore = {
         "precision": sum(bertscore["precision"]) / len(bertscore["precision"]),
