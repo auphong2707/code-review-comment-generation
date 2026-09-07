@@ -17,6 +17,7 @@ official run instead of training at an arbitrary LR.
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -27,10 +28,21 @@ if str(REPO_ROOT) not in sys.path:
 from src.utils.constants import LR
 
 
-def best_metric(run_dir: Path):
+def best_metric(run_dir: Path, require_complete=False):
     """Best eval_bleu_4 recorded for one sweep run (None if it never evaluated)."""
+    if require_complete:
+        from src.training.recovery import fingerprint, validate_training_result, valid_checkpoint
+        try:
+            identity = json.loads((run_dir / "run_identity.json").read_text())
+            if identity["fingerprint"] != fingerprint(identity["identity"]):
+                return None
+            validate_training_result(run_dir / "complete_results.json", identity["fingerprint"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
     states = sorted(run_dir.glob("checkpoint-*/trainer_state.json"))
-    if (run_dir / "trainer_state.json").exists():
+    if require_complete:
+        states = [p for p in states if valid_checkpoint(p.parent)]
+    if not require_complete and (run_dir / "trainer_state.json").exists():
         states.append(run_dir / "trainer_state.json")
     values = []
     for state_path in states:
@@ -45,6 +57,7 @@ def best_metric(run_dir: Path):
             for entry in state.get("log_history", [])
             if entry.get("eval_bleu_4") is not None
         )
+    values = [value for value in values if math.isfinite(value)]
     return max(values) if values else None
 
 
@@ -59,14 +72,18 @@ def main(argv=None):
                         help="Sweep experiment ids to compare (default: the 3-point bracket 0 1 2)")
     parser.add_argument("--quiet", action="store_true",
                         help="Print only the winning LR (no table)")
+    parser.add_argument("--require-complete", action="store_true",
+                        help="Require every bracket run to have validated A5000 final results and committed state")
     args = parser.parse_args(argv)
+    if any(i < 0 or i >= len(LR) for i in args.ids):
+        parser.error("Sweep ids must index the configured LR grid")
 
     root = Path(args.sweep_root)
     rows = []
     for experiment_id in args.ids:
         run_dir = root / f"{args.stem}_{experiment_id}"
         rows.append((experiment_id, LR[experiment_id], run_dir,
-                     best_metric(run_dir) if run_dir.is_dir() else None))
+                     best_metric(run_dir, args.require_complete) if run_dir.is_dir() else None))
 
     if not args.quiet:
         print(f"sweep {args.stem} under {root}", file=sys.stderr)
@@ -74,6 +91,10 @@ def main(argv=None):
             state = "missing" if not run_dir.is_dir() else (
                 "no eval yet" if metric is None else f"eval_bleu_4={metric:.6f}")
             print(f"  id={experiment_id} lr={lr!s:<8} {state:<24} {run_dir}", file=sys.stderr)
+
+    if args.require_complete and any(row[3] is None for row in rows):
+        print("select_sweep_lr: incomplete bracket; official run is blocked", file=sys.stderr)
+        return 1
 
     scored = [row for row in rows if row[3] is not None]
     if not scored:

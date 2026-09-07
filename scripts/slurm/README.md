@@ -1,76 +1,109 @@
-# H100 campaign jobs
+# A5000 server campaigns
 
-Slurm wrappers for the revision experiments. One file per campaign, submitted in
-queue order; every file is a thin, **idempotent** run list — finished runs are
-skipped instantly (`--skip-if-complete`), so a job that hits the wall clock is
-continued by re-submitting the same script.
+Exactly six jobs cover phases 00–07 and 12–16. Each requests one GPU and at most
+72 hours. Submit from the repository root, using your site's A5000 partition/GRES.
+The runtime rejects other GPUs. Phases 08–11 and 17–20 are outside this migration.
+
+| Script | Selected work by default |
+|---|---|
+| `00_07_infrastructure.sbatch` | Code/mock checks, 35 training lifecycle pilots, 3 ICL and 2 judge memory pilots |
+| `12_campaign_a.sbatch` | 54 TransReview runs: 18 configurations × seeds 42, 1, 2 |
+| `13_campaign_b.sbatch` | 8 DoRA runs and 8 matching A5000 LoRA controls |
+| `14_campaign_c.sbatch` | 66 ICL v2 runs, actual input cap 2048 tokens |
+| `15_campaign_d.sbatch` | 14B QLoRA: 3-point sweep then official run, both datasets |
+| `16_campaign_j.sbatch` | Qwen over revision outputs; Llama over legacy and revision outputs, CR subset |
+
+A seed-42 run uses the canonical name without a seed suffix under the A5000 profile.
+Five B controls reuse A outputs. A's optional `RUN_P1=1` adds ten grid commands,
+eight new outputs. B's `RUN_P2=1` adds two CR 7B DoRA/control pairs. C's
+`RUN_P2=1` adds twelve 10-shot demo-seed runs. These options must be preserved when
+resubmitting or checking a selected scope. A accepts `SEEDS` (default `42 1 2`).
+
+Ordinary 14B BF16 LoRA, 7B FMFT and GaLore are unavailable in this profile.
+Their missing research evidence must be disclosed; QLoRA/DoRA are separate methods.
+All remaining combinations require a matching measured admission report before
+campaign training/inference. No A5000 memory or throughput claim follows from CPU tests.
+
+## Preview and server launch
+
+Local verification is limited to unit tests, mocks and tiny CPU smoke tests. Do not
+run pretrained-model smoke tests or these jobs locally. A safe command-only preview is:
 
 ```bash
-mkdir -p assets/logs/slurm                        # slurm needs the dir to exist
-sbatch scripts/slurm/00_preflight.sbatch          # once, before anything else
+DRY=1 RCG_PYTHON=.venv/bin/python bash scripts/slurm/12_campaign_a.sbatch
 ```
 
-| Order | Script | Phase | Content | H100-h |
-|---|---|---|---|---|
-| 0 | `00_preflight.sbatch` | — | env report, pytest, model downloads, VRAM probes | <1 |
-| 1 | `10_campaign_b.sbatch` | 13 | GaLore 7B full FT (P0), DoRA (P1), DoRA 7B×CR + GaLore seeds (P2) | 60 / 30 / 65 |
-| 2 | `20_campaign_a.sbatch` | 12 | TransReview seed replicates (P0), HP-transfer grid (P1) | 110 / 12 |
-| 3 | `30_campaign_c.sbatch` | 14 | ICL prompt-v2 regeneration (P0), 10-shot demo seeds (P2) | 60 / 15 |
-| 4 | `40_campaign_j.sbatch` | 16 | Qwen judge + Llama-3.1 judge over new and legacy rows | 40 / 15 / 10 |
-| 5 | `50_campaign_d.sbatch` | 15 | 14B QLoRA/LoRA (P1), 14B LoRA CR (P2) | 80 / 40 |
+`DRY=1` does not activate conda, load models, read secrets or create output directories.
+On the server, provision the declared environment, datasets, legacy artifacts and
+local judge models first. These files are gitignored. No script installs packages,
+logs into HF, uploads results, or submits another job. Use an already activated
+Python environment, `RCG_PYTHON`, or both `CONDA_SH` and `RCG_CONDA_ENV`.
 
-Submission order across priorities: **P0 of 1 → 2 → 3 → 4**, then
-**P1 of 1 → 5 → 2 → 5 → 4**, then P2. Campaign J is re-run after every block —
-it only judges artifacts that already exist and replays cached scores.
+The user launches the server jobs, for example (replace `YOUR_A5000_PARTITION`):
 
-## Knobs (environment variables, all optional)
+```bash
+mkdir -p assets/logs/slurm
+sbatch --partition=YOUR_A5000_PARTITION scripts/slurm/00_07_infrastructure.sbatch
+# After qualification completes, submit 12, 13, 14, 15; submit 16 after producers finish.
+sbatch --partition=YOUR_A5000_PARTITION scripts/slurm/12_campaign_a.sbatch
+```
 
-| Variable | Effect |
+Phase 00–07 includes real server pilots by default. `RCG_PROBES=0` selects code/mock
+checks only and does not qualify campaigns. Pilots exercise optimizer, validation,
+checkpoint interruption/reload and generation, with maximum-length inputs. Admission
+requires measured peak reserved memory <=22 GiB on an A5000. Reports bind to source
+and environment; changing either requires requalification. Judge input over its admitted
+budget fails explicitly without truncating the rubric. Increase
+`JUDGE_MAX_INPUT_TOKENS` only after rerunning matching judge pilots at that budget.
+
+## Recovery across allocations
+
+Slurm sends USR1 to the batch shell ten minutes before the limit. The shell forwards
+it to the active process group, waits for a safe stop and exits 75. Resubmit the
+**same script, settings, checkout and output roots** to continue. `--requeue` permits
+requeueing but does not automatically resubmit a timed-out job.
+
+Training resumes optimizer/scheduler/RNG state from the latest committed checkpoint
+(default every 100 optimizer steps). Validation boundaries finish evaluation/save before
+stopping. Test and ICL generations persist per row; judge generations persist per cache
+entry. A hard kill can replay work since the last committed checkpoint/row/call,
+including an unfinished validation pass. Measure save and validation time on the server
+and increase the warning interval if ten minutes is insufficient. Checkpoint files must
+stay on persistent storage. Concurrent writers to the same training/ICL run are rejected.
+
+Completed outputs are validated before skipping. An incomplete sweep cannot select an
+official LR. Failures stop dependent steps immediately. `ONLY=<regex>` and `SKIP=<regex>`
+are useful for diagnosis; filtered real execution exits 75 and does not claim campaign
+completion. A later unfiltered submission validates/skips completed work.
+
+Read-only producer completion checks use the exact selected sbatch run lists:
+
+```bash
+python tools/campaign_status.py A --results-root assets/results/revision-a5000
+```
+
+Phase J requires A, B, C and D by default. `J_REQUIRE_PHASES='A B C'` permits an explicit
+partial pass; this does not mean D or the whole revision is complete. Preserve producer
+`RUN_P*`/`SEEDS` scope when checking. Judge generation/resource errors fail the job;
+resubmission reuses cached calls. `RUN_REVISION=0` selects legacy-only judging;
+`RUN_QWEN`, `RUN_LLAMA`, `RUN_LEGACY` select backend/input passes (default all enabled).
+
+## Paths and settings
+
+| Variable | Default / purpose |
 |---|---|
-| `RUN_P0` / `RUN_P1` / `RUN_P2` | Select the priority block (defaults differ per file; see its header) |
-| `DRY=1` | Print every command with its arguments, execute nothing. Works with `bash`, no GPU needed |
-| `ONLY=<regex>` / `SKIP=<regex>` | Run/skip only steps whose label matches (e.g. `ONLY='seed1'`) |
-| `RCG_CONDA_ENV` | Conda env to activate (default `kse`; locally `code_review`) |
-| `RCG_ROOT` | Repo root, when not submitting from it |
-| `WANDB_MODE` | `offline` by default so a node without egress cannot stall a 20 h run. Sync later with `wandb sync assets/wandb/offline-run-*` |
-| `RCG_DOWNLOAD=1`, `RCG_PIP_INSTALL=1` | Preflight only: fetch models / install `galore-torch` + `rank-bm25` |
+| `RCG_ROOT` | Submission directory; repository root |
+| `RCG_RESULTS_ROOT` | `assets/results/revision-a5000` |
+| `RCG_PREFLIGHT_ROOT` | `assets/results/a5000-preflight` |
+| `RCG_JUDGE_ROOT` | `assets/results/a5000-judges` |
+| `RCG_LOG_ROOT` | `assets/logs/a5000`, with per-phase subdirectories |
+| `RCG_RECOVERY_STEPS` | 100 optimizer steps |
+| `JUDGE_MAX_INPUT_TOKENS` | 4096, guarded before GPU transfer |
+| `CR_EVAL_MAX` | 2000 validation rows for the 14B CR official only |
+| `WANDB_MODE` | offline |
 
-Per-campaign knobs (`GALORE_VARIANT`, `GALORE_LR_TR`, `LR_14B_QLORA_TR`, `SEEDS`,
-`ICL_14B`, `ICL_ATTN`, `CR_EVAL_MAX`, `RUN_QWEN`/`RUN_LLAMA`/`RUN_LEGACY`, …) are
-documented in each file's header comment. If the preflight reports `flash_attn
-MISSING`, run campaign C with `ICL_ATTN=sdpa` (it does not change output filenames).
-
-## Before you submit
-
-1. **Preview the queue offline** — `DRY=1 bash scripts/slurm/20_campaign_a.sbatch`
-   prints all 36 commands without touching the GPU. Do this after any edit.
-2. **Read the preflight probes.** If GaLore peaks above ~75 GB, submit campaign B
-   with `GALORE_VARIANT=galore_adamw_8bit_layerwise`.
-3. **Edit the `#SBATCH` headers** — `--partition`, and `--gres=gpu:h100:1` if the
-   cluster does not use typed gres.
-4. **`assets/` must be present on the cluster** (data, legacy artifacts, judge
-   models). It is gitignored, so a fresh `git clone` will not have it.
-
-## Where things land
-
-```
-assets/results/revision/<dataset>/<stem>_official_<lr>[_seed<n>]/complete_results.json
-assets/results/revision/<dataset>/sweeps/<stem>_<id>/            # 3-point LR brackets
-assets/results/revision/icl/<dataset>/<model>_icl_<k>ex_<sel>[_s<seed>]_v2.json
-assets/models/llm-as-judge/table-results-revision/               # Qwen judge, new rows
-assets/models/llm-as-judge/table-results-llama31-legacy/         # Llama judge, frozen 54 jobs
-assets/models/llm-as-judge/table-results-llama31-revision/       # Llama judge, new rows
-assets/logs/slurm/<job-name>-<job-id>.out                        # slurm stdout
-assets/logs/campaign/<job-name>/<step-label>.log                 # one log per run
-```
-
-Nothing writes to the frozen artifact trees (`assets/models/review-code-generation*`,
-`assets/models/llm-as-judge/table-results/`); the revision roots are new siblings.
-
-## Supporting tools
-
-- `tools/select_sweep_lr.py` — picks the official LR from a finished 3-point bracket
-  (best validation BLEU-4 in `trainer_state.json`); campaigns B and D call it
-  automatically, and any `LR_*` env var overrides it.
-- `tools/revision_judge_jobs.py` — scans `assets/results/revision/` and writes the
-  `--jobs-file` campaign J feeds to `tools/update_llm_judge_tables.py`.
+Training uses `<root>/<dataset>/<stem>_official_<lr>[_seed<n>]`; sweeps are in
+`<root>/<dataset>/sweeps`. ICL uses `<root>/icl/<dataset>`. Judge roots are separate
+`qwen-revision`, `llama-legacy`, `llama-revision` directories. Frozen artifacts remain
+inputs. Agent tests use scratch directories; server experiments produce their own
+isolated output trees. Runtime estimates remain pending measured server throughput.

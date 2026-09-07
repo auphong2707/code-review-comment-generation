@@ -119,6 +119,26 @@ def dry_run_payload(model, method, spec, args):
     }
 
 
+def recovery_identity(spec, profile_overrides, args, run_info, digest=None):
+    from src.training.recovery import file_digest
+    digest = digest or file_digest
+    from src.utils.constants import DATASET_CONFIGS, DATASET_NAME
+    dataset = args.dataset or DATASET_NAME
+    files = DATASET_CONFIGS[dataset]["data_files"]
+    if args.data_dir:
+        files = {k: Path(args.data_dir) / Path(v).name for k, v in files.items()}
+    identity = {
+        "spec": spec, "protocol_overrides": profile_overrides,
+        "dataset": dataset, "data": {k: digest(v) for k, v in files.items()},
+        "seed": args.seed, "learning_rate": run_info["learning_rate"],
+        "subset": args.subset, "eval_max_samples": args.eval_max_samples,
+        "gen_batch_size": args.gen_batch_size, "memory_profile": args.memory_profile,
+        "attention": args.attn_implementation, "pin_peft_defaults": args.pin_peft_defaults,
+        "lifecycle_probe": args.lifecycle_probe,
+    }
+    return identity
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     model, method, spec = get_spec(args.model, args.method)
@@ -130,6 +150,8 @@ def main(argv=None):
     if args.recovery_steps < 1:
         raise SystemExit("--recovery-steps must be positive")
     if args.memory_profile:
+        if args.seed == 42:
+            args.seed = None  # effective default seed shares the canonical output name
         if not args.results_root and not args.probe:
             raise SystemExit("--memory-profile requires an isolated --results-root")
         if args.gen_batch_size != 1:
@@ -178,20 +200,7 @@ def main(argv=None):
     run_info["probe_stop_after_step"] = args.probe_stop_after_step
     with (RunLock(run_dir / "run.lock") if recover else nullcontext()):
         if recover:
-            from src.utils.constants import DATASET_CONFIGS, DATASET_NAME
-            dataset = args.dataset or DATASET_NAME
-            files = DATASET_CONFIGS[dataset]["data_files"]
-            if args.data_dir:
-                files = {k: Path(args.data_dir) / Path(v).name for k, v in files.items()}
-            identity = {
-                "spec": spec, "protocol_overrides": profile_overrides,
-                "dataset": dataset, "data": {k: file_digest(v) for k, v in files.items()},
-                "seed": args.seed, "learning_rate": run_info["learning_rate"],
-                "subset": args.subset, "eval_max_samples": args.eval_max_samples,
-                "gen_batch_size": args.gen_batch_size, "memory_profile": args.memory_profile,
-                "attention": args.attn_implementation, "pin_peft_defaults": args.pin_peft_defaults,
-                "lifecycle_probe": args.lifecycle_probe,
-            }
+            identity = recovery_identity(spec, profile_overrides, args, run_info)
             if not (run_dir / "run_identity.json").exists() and (
                     (run_dir / "complete_results.json").exists() or list(run_dir.glob("checkpoint-*"))):
                 raise SystemExit("Refusing to adopt existing results/checkpoints without A5000 identity")
