@@ -17,7 +17,8 @@ import time
 def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         smoke=False, attn_implementation=None, seed=None, protocol="archived",
         protocol_overrides=None, gen_batch_size=1, eval_max_samples=None,
-        peft_overrides=None, probe=False, memory_profile=None):
+        peft_overrides=None, probe=False, memory_profile=None,
+        recovery_steps=100, upload=False):
     import huggingface_hub
     import torch
     import wandb
@@ -55,6 +56,12 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     configure_metric_resources(device="cpu" if memory_profile else None,
                                batch_size=1 if memory_profile else None)
 
+    from .recovery import (latest_recovery_checkpoint, recovery_trainer_class,
+                           attach_recovery, PredictionJournal, stop_if_requested, atomic_json, generation_identity, model_revision)
+    recover = run_info.get("recovery", False)
+    if recover:
+        latest_checkpoint = latest_recovery_checkpoint
+
     experiment_name = run_info["experiment_name"]
     experiment_results_dir = run_info["experiment_results_dir"]
     if peft_overrides:
@@ -66,8 +73,10 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
 
     # [PREPARING DATASET AND FUNCTIONS]
     if not smoke and not probe:
-        wandb.login(key=os.getenv("WANDB_API_KEY"))
-        huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
+        if os.getenv("WANDB_MODE", "offline") == "online":
+            wandb.login(key=os.getenv("WANDB_API_KEY"))
+        if upload:
+            huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
     os.makedirs(WANDB_DIR, exist_ok=True)
     wandb.init(project=WANDB_PROJECT, name=experiment_name, dir=WANDB_DIR,
                group=os.getenv("WANDB_GROUP") or None,
@@ -170,7 +179,8 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         return as_eval_results(compute_generation_metrics(decoded_preds, decoded_labels))
 
     time_cb = TimeMemoryCallback()
-    trainer = Seq2SeqTrainer(
+    trainer_cls = recovery_trainer_class(Seq2SeqTrainer) if recover else Seq2SeqTrainer
+    trainer = trainer_cls(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -179,6 +189,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         compute_metrics=compute_metrics,
         callbacks=[time_cb],
     )
+
+    if recover:
+        trainer.recovery_model_revision = model_revision(
+            experiment_results_dir, spec["model_id"], getattr(model.config, "_commit_hash", None),
+            resumed=bool(checkpoint))
+        attach_recovery(trainer, recovery_steps)
+        stop_if_requested()
 
     train_result = (trainer.train(resume_from_checkpoint=checkpoint) if checkpoint
                     else trainer.train())
@@ -202,6 +219,8 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     print("Starting test set evaluation with text generation...")
     model.eval()
 
+    journal = (PredictionJournal(os.path.join(experiment_results_dir, "test_progress"),
+                                 generation_identity(trainer, run_info["fingerprint"]), len(test_dataset)) if recover else None)
     predictions = []
     references = []
 
@@ -221,6 +240,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     test_gen_start = time.time()
     with torch.no_grad():
         for i, batch in enumerate(tqdm(test_loader, desc="Evaluating test set")):
+            if journal:
+                stop_if_requested()
+                previous = journal.get(i)
+                if previous is not None:
+                    predictions.append(previous["prediction"])
+                    references.append(previous["reference"])
+                    continue
             labels = batch["labels"]
             batch = {k: v.to(model.device) for k, v in batch.items()}
 
@@ -250,6 +276,8 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
 
                 predictions.append(generated_text)
                 references.append(reference_text)
+                if journal:
+                    journal.put(i, {"prediction": generated_text, "reference": reference_text})
 
                 if i < 3:
                     print(f"Example {i+1}:")
@@ -268,6 +296,9 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
                     references.append(tokenizer.decode(ref_ids, skip_special_tokens=True))
 
     test_generation_time_s = time.time() - test_gen_start
+    if journal:
+        journal.values()  # Require full coverage before corpus metrics/final publication.
+        stop_if_requested()
     metrics = compute_generation_metrics(predictions, references)
 
     print(f"Test Results:")
@@ -311,10 +342,17 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
 
     with open(f"{experiment_results_dir}/training_args.txt", "w") as f:
         f.write(str(training_args))
-    with open(experiment_results_dir + "/complete_results.json", "w") as f:
-        json.dump(complete_results, f, indent=2)
+    if recover:
+        complete_results["resources"]["model_revision"] = trainer.recovery_model_revision
+        complete_results["run_fingerprint"] = run_info["fingerprint"]
+        complete_results["expected_test_rows"] = len(test_dataset)
+        stop_if_requested()
+        atomic_json(os.path.join(experiment_results_dir, "complete_results.json"), complete_results)
+    else:
+        with open(experiment_results_dir + "/complete_results.json", "w") as f:
+            json.dump(complete_results, f, indent=2)
 
-    if "official" in experiment_name and not smoke:
+    if upload and "official" in experiment_name and not smoke:
         # legacy pairing: upload the spec's results root; a --results-root run
         # lives elsewhere, so upload that root instead (KI-012 follow-up)
         upload_folder = spec["results_dir"]

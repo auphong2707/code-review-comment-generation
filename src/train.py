@@ -54,6 +54,9 @@ def build_parser():
                         choices=["galore_adamw", "galore_adamw_8bit", "galore_adamw_8bit_layerwise"],
                         help="Override the GaLore optimizer variant (galore method only; e.g. "
                              "8bit_layerwise if 80 GB is exceeded — recorded via the overrides)")
+    parser.add_argument("--recovery-steps", type=int, default=100,
+                        help="Optimizer steps between A5000 recovery checkpoints (default: 100)")
+    parser.add_argument("--upload", action="store_true", help="Explicitly enable HF login/upload")
     parser.add_argument("--memory-profile", choices=["a5000"], default=None,
                         help="Opt-in 24 GB profile; requires an isolated --results-root and target GPU probes")
     parser.add_argument("--gen-batch-size", dest="gen_batch_size", type=int, default=1,
@@ -115,6 +118,8 @@ def dry_run_payload(model, method, spec, args):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     model, method, spec = get_spec(args.model, args.method)
+    if args.recovery_steps < 1:
+        raise SystemExit("--recovery-steps must be positive")
     if args.memory_profile:
         if not args.results_root and not args.probe:
             raise SystemExit("--memory-profile requires an isolated --results-root")
@@ -156,52 +161,81 @@ def main(argv=None):
                            learning_rate=args.learning_rate,
                            seed=args.seed, results_root=args.results_root)
 
-    if args.skip_if_complete and os.path.exists(
-            os.path.join(run_info["experiment_results_dir"], "complete_results.json")):
-        print(f"skip-if-complete: {run_info['experiment_results_dir']} already has "
-              "complete_results.json — nothing to do")
-        return
+    from contextlib import nullcontext
+    from src.training.recovery import RunLock, bind_identity, file_digest, install_stop_handlers
+    recover = bool(args.memory_profile and not (args.probe or args.smoke))
+    run_dir = Path(run_info["experiment_results_dir"])
+    with (RunLock(run_dir / "run.lock") if recover else nullcontext()):
+        if recover:
+            from src.utils.constants import DATASET_CONFIGS, DATASET_NAME
+            dataset = args.dataset or DATASET_NAME
+            files = DATASET_CONFIGS[dataset]["data_files"]
+            if args.data_dir:
+                files = {k: Path(args.data_dir) / Path(v).name for k, v in files.items()}
+            identity = {
+                "spec": spec, "protocol_overrides": profile_overrides,
+                "dataset": dataset, "data": {k: file_digest(v) for k, v in files.items()},
+                "seed": args.seed, "learning_rate": run_info["learning_rate"],
+                "subset": args.subset, "eval_max_samples": args.eval_max_samples,
+                "gen_batch_size": args.gen_batch_size, "memory_profile": args.memory_profile,
+                "attention": args.attn_implementation, "pin_peft_defaults": args.pin_peft_defaults,
+            }
+            if not (run_dir / "run_identity.json").exists() and (
+                    (run_dir / "complete_results.json").exists() or list(run_dir.glob("checkpoint-*"))):
+                raise SystemExit("Refusing to adopt existing results/checkpoints without A5000 identity")
+            run_info["fingerprint"] = bind_identity(run_dir / "run_identity.json", identity)
+            run_info["recovery"] = True
+            install_stop_handlers()
+        if args.skip_if_complete and os.path.exists(
+                os.path.join(run_info["experiment_results_dir"], "complete_results.json")):
+            if run_info.get("recovery"):
+                from src.training.recovery import validate_training_result
+                validate_training_result(Path(run_info["experiment_results_dir"]) / "complete_results.json",
+                                         run_info["fingerprint"])
+            print(f"skip-if-complete: {run_info['experiment_results_dir']} already has "
+                  "complete_results.json — nothing to do")
+            return
 
-    if args.data_dir:
-        # Point the dataset registry at an alternate data directory (smoke runs
-        # on machines where the canonical paths do not exist)
-        from src.utils.constants import DATASET_CONFIGS, DATASET_NAME
+        if args.data_dir:
+            # Point the dataset registry at an alternate data directory (smoke runs
+            # on machines where the canonical paths do not exist)
+            from src.utils.constants import DATASET_CONFIGS, DATASET_NAME
 
-        dataset_name = args.dataset or DATASET_NAME
-        files = DATASET_CONFIGS[dataset_name]["data_files"]
-        DATASET_CONFIGS[dataset_name]["data_files"] = {
-            split: os.path.join(args.data_dir, os.path.basename(path))
-            for split, path in files.items()
-        }
+            dataset_name = args.dataset or DATASET_NAME
+            files = DATASET_CONFIGS[dataset_name]["data_files"]
+            DATASET_CONFIGS[dataset_name]["data_files"] = {
+                split: os.path.join(args.data_dir, os.path.basename(path))
+                for split, path in files.items()
+            }
 
-    from src.utils.helper import set_seed
+        from src.utils.helper import set_seed
 
-    set_seed() if args.seed is None else set_seed(args.seed)
+        set_seed() if args.seed is None else set_seed(args.seed)
 
-    if spec["family"] == "causal":
-        from src.training.causal_runner import run
-    else:
-        from src.training.seq2seq_runner import run
+        if spec["family"] == "causal":
+            from src.training.causal_runner import run
+        else:
+            from src.training.seq2seq_runner import run
 
-    protocol_overrides = (profile_overrides if profile_overrides is not None
-                          else resolve_protocol_overrides(model, args))
-    if args.galore_variant and method == "galore":
-        protocol_overrides["optim"] = args.galore_variant
+        protocol_overrides = (profile_overrides if profile_overrides is not None
+                              else resolve_protocol_overrides(model, args))
+        if args.galore_variant and method == "galore":
+            protocol_overrides["optim"] = args.galore_variant
 
-    from src.training.specs_revision import peft_pin_for
-    from src.utils.constants import DATASET_NAME
+        from src.training.specs_revision import peft_pin_for
+        from src.utils.constants import DATASET_NAME
 
-    pin_enabled = (args.pin_peft_defaults if args.pin_peft_defaults is not None
-                   else args.protocol == "archived")
-    peft_overrides = (peft_pin_for(args.dataset or DATASET_NAME, model, method)
-                      if pin_enabled else {})
+        pin_enabled = (args.pin_peft_defaults if args.pin_peft_defaults is not None
+                       else args.protocol == "archived")
+        peft_overrides = (peft_pin_for(args.dataset or DATASET_NAME, model, method)
+                          if pin_enabled else {})
 
-    run(model, method, spec, run_info, subset=args.subset, dataset_name=args.dataset,
-        smoke=args.smoke, attn_implementation=args.attn_implementation, seed=args.seed,
-        protocol=args.protocol, protocol_overrides=protocol_overrides,
-        gen_batch_size=args.gen_batch_size, eval_max_samples=args.eval_max_samples,
-        peft_overrides=peft_overrides, probe=args.probe, memory_profile=args.memory_profile)
-
+        run(model, method, spec, run_info, subset=args.subset, dataset_name=args.dataset,
+            smoke=args.smoke, attn_implementation=args.attn_implementation, seed=args.seed,
+            protocol=args.protocol, protocol_overrides=protocol_overrides,
+            gen_batch_size=args.gen_batch_size, eval_max_samples=args.eval_max_samples,
+            peft_overrides=peft_overrides, probe=args.probe, memory_profile=args.memory_profile,
+            recovery_steps=args.recovery_steps, upload=args.upload)
 
 if __name__ == "__main__":
     main()

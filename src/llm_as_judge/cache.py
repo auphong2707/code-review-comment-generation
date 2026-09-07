@@ -38,14 +38,14 @@ class JsonlCache:
         if not path or not os.path.exists(path):
             return
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "rb") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
+                    entry = json.loads(line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 key = entry.get("key")
                 if key:
@@ -63,5 +63,13 @@ class JsonlCache:
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # Separate a torn trailing record before appending. Existing valid cache
+        # records and default cache keys are unchanged; the reader ignores the fragment.
+        with open(self.path, "a+b") as f:
+            if f.tell():
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write((json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8"))
+            f.flush()
+            os.fsync(f.fileno())

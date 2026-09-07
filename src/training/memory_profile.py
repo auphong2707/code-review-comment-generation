@@ -32,6 +32,7 @@ def apply_memory_profile(spec, protocol_overrides, profile, model, method):
         "per_device_eval_batch_size": 1,
         "gradient_accumulation_steps": effective_batch,
         "eval_accumulation_steps": 1,
+        "save_total_limit": 3,  # retain latest recovery as well as best epoch checkpoint
         "gradient_checkpointing": True,
         "gradient_checkpointing_kwargs": {"use_reentrant": False},
     }

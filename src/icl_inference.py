@@ -43,10 +43,10 @@ from src.icl.selection import BM25Selection, demo_seed_select, legacy_select
 
 def get_max_context_length(model) -> int:
     """Get the maximum context length from the model's configuration.
-    
+
     Args:
         model: The loaded model
-    
+
     Returns:
         Maximum context length for the model
     """
@@ -64,19 +64,19 @@ def get_max_context_length(model) -> int:
 
 def check_context_length_warning(text: str, tokenizer, model, context_type: str = "input") -> bool:
     """Check if text exceeds model's context length and issue warning.
-    
+
     Args:
         text: Text to check
         tokenizer: Tokenizer to use for encoding
         model: The loaded model
         context_type: Type of context ("input", "prompt")
-    
+
     Returns:
         True if context was truncated, False otherwise
     """
     max_length = get_max_context_length(model)
     tokens = tokenizer.encode(text, add_special_tokens=True)
-    
+
     if len(tokens) > max_length:
         warnings.warn(
             f"Context length ({len(tokens)} tokens) exceeds model "
@@ -106,17 +106,17 @@ def load_base_model_and_tokenizer(model_name: str, attn_implementation: str = No
         "qwen25-0.5b": (MODEL_QWEN25_0_5B, TOKENIZER_QWEN25_0_5B),
         "qwen25-14b": (MODEL_QWEN25_14B, TOKENIZER_QWEN25_14B),
     }
-    
+
     if model_name not in model_mapping:
         raise ValueError(f"Unsupported model: {model_name}. Choose from {list(model_mapping.keys())}")
-    
+
     model_path, tokenizer_path = model_mapping[model_name]
-    
+
     print(f"Loading model: {model_path}")
-    
+
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
-    
+
     # Load model based on type
     if model_name in ["codet5", "plbart"]:
         model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
@@ -133,22 +133,22 @@ def load_base_model_and_tokenizer(model_name: str, attn_implementation: str = No
         tokenizer.padding_side = "left"
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-    
+
     model.eval()
-    
+
     # Set generation config
     if hasattr(model, 'generation_config'):
         model.generation_config.num_beams = NUM_BEAMS
         model.generation_config.max_new_tokens = OUTPUT_MAX_LENGTH
-    
+
     return model, tokenizer
 
 
-def select_icl_examples(train_data: List[Dict], num_examples: int, selection_method: str = "random", 
-                       current_sample: Dict = None, seed: int = SEED, model_name: str = None, 
+def select_icl_examples(train_data: List[Dict], num_examples: int, selection_method: str = "random",
+                       current_sample: Dict = None, seed: int = SEED, model_name: str = None,
                        tokenizer=None, model=None) -> List[Dict]:
     """Select examples for in-context learning.
-    
+
     Args:
         train_data: List of training examples
         num_examples: Number of examples to select
@@ -158,7 +158,7 @@ def select_icl_examples(train_data: List[Dict], num_examples: int, selection_met
         model_name: Name of the model (for prompt building)
         tokenizer: Tokenizer (for context length checking)
         model: The loaded model (for context length checking)
-    
+
     Returns:
         List of selected examples
     """
@@ -223,20 +223,20 @@ def build_icl_prompt_causal(examples: List[Dict], test_code: str, tokenizer) -> 
 
 def generate_review_seq2seq(model, tokenizer, prompt: str, max_new_tokens: int = OUTPUT_MAX_LENGTH) -> str:
     """Generate review comment using seq2seq model.
-    
+
     Args:
         model: Seq2seq model
         tokenizer: Tokenizer
         prompt: Input prompt
         max_new_tokens: Maximum tokens to generate
-    
+
     Returns:
         Generated review comment
     """
     # Check context length and warn if truncated
     max_input_length = get_max_context_length(model)
     check_context_length_warning(prompt, tokenizer, model, "seq2seq prompt")
-    
+
     inputs = tokenizer(
         prompt,
         max_length=max_input_length,
@@ -244,7 +244,7 @@ def generate_review_seq2seq(model, tokenizer, prompt: str, max_new_tokens: int =
         padding=True,
         return_tensors="pt"
     ).to(model.device)
-    
+
     with torch.no_grad():
         generated_ids = model.generate(
             input_ids=inputs["input_ids"],
@@ -257,20 +257,20 @@ def generate_review_seq2seq(model, tokenizer, prompt: str, max_new_tokens: int =
             eos_token_id=tokenizer.eos_token_id,
             decoder_start_token_id=tokenizer.bos_token_id if hasattr(tokenizer, 'bos_token_id') else None,
         )
-    
+
     generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
     return generated_text.strip()
 
 
 def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_tokens: int = OUTPUT_MAX_LENGTH) -> str:
     """Generate review comment using causal LM model.
-    
+
     Args:
         model: Causal LM model
         tokenizer: Tokenizer
         messages: Messages for chat template
         max_new_tokens: Maximum tokens to generate
-    
+
     Returns:
         Generated review comment
     """
@@ -280,11 +280,11 @@ def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_token
         tokenize=False,
         add_generation_prompt=True
     )
-    
+
     # Check context length and warn if truncated
     max_input_length = get_max_context_length(model) - max_new_tokens  # Reserve space for output
     check_context_length_warning(prompt, tokenizer, model, "causal LM prompt")
-    
+
     inputs = tokenizer(
         prompt,
         max_length=max_input_length,
@@ -292,9 +292,9 @@ def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_token
         padding=True,
         return_tensors="pt"
     ).to(model.device)
-    
+
     input_length = inputs["input_ids"].shape[1]
-    
+
     with torch.no_grad():
         with torch.autocast("cuda", dtype=torch.bfloat16):
             generated_ids = model.generate(
@@ -307,15 +307,16 @@ def generate_review_causal(model, tokenizer, messages: List[Dict], max_new_token
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
-    
+
     # Extract only the generated part
     generated_ids = generated_ids[0][input_length:]
     generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-    
+
     return generated_text.strip()
 
 
-def generate_batched(model, tokenizer, prompts_chunk: List[str], seq2seq: bool) -> List[str]:
+def generate_batched(model, tokenizer, prompts_chunk: List[str], seq2seq: bool,
+                     max_prompt_tokens=None) -> List[str]:
     """Batched generation with the same beam settings as the per-sample paths.
 
     Causal batches are left-padded (tokenizer.padding_side="left"); note that
@@ -323,6 +324,8 @@ def generate_batched(model, tokenizer, prompts_chunk: List[str], seq2seq: bool) 
     pinned in the campaign manifest (D-028c).
     """
     max_input_length = get_max_context_length(model) - (0 if seq2seq else OUTPUT_MAX_LENGTH)
+    if max_prompt_tokens is not None:
+        max_input_length = min(max_input_length, max_prompt_tokens)
     inputs = tokenizer(prompts_chunk, max_length=max_input_length, truncation=True,
                        padding=True, return_tensors="pt").to(model.device)
     gen_kwargs = dict(
@@ -358,12 +361,18 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
                      dataset_name: str = None, prompt_version: str = "v1",
                      demo_seed: int = None, batch_size: int = 1,
                      attn_implementation: str = None, max_prompt_tokens: int = None,
-                     allow_exact_match: bool = False) -> Dict[str, Any]:
+                     allow_exact_match: bool = False, memory_profile=None,
+                     run_fingerprint=None) -> Dict[str, Any]:
     """Run ICL inference on the test dataset.
 
     Every new argument defaults to the legacy behaviour: prompt v1, global-RNG
     demo selection seeded seed+i, greedy context fit, per-sample generation.
     """
+
+    from src.training.recovery import PredictionJournal, stop_if_requested
+    from src.evaluation.metrics import configure_metric_resources
+    configure_metric_resources(device="cpu" if memory_profile else None,
+                               batch_size=1 if memory_profile else None)
 
     # Configure warnings based on max_context_utilization flag
     if not max_context_utilization:
@@ -459,12 +468,31 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
             demo_counts.append(0)
             prompt_token_counts.append(0)
 
+    journal = (PredictionJournal(str(output_path) + ".progress",
+               {"run": run_fingerprint, "model_revision": getattr(model.config, "_commit_hash", None),
+                "prompts": prompts, "references": references}, len(prompts)) if memory_profile else None)
+
     # Pass B: generate
     print(f"Running ICL inference with {num_examples} examples...")
     predictions = ["<ERROR>"] * len(prompts)
     valid = [i for i, p in enumerate(prompts) if p != "<ERROR>"]
 
-    if batch_size <= 1:
+    if journal:
+        if len(valid) != len(prompts):
+            raise RuntimeError("A5000 ICL prompt construction failed; refusing complete output")
+        for i in tqdm(valid, desc="Generating reviews (resumable)"):
+            stop_if_requested()
+            previous = journal.get(i)
+            if previous is None:
+                # No catch-all: an OOM/error must fail, preserving earlier rows.
+                text = generate_batched(model, tokenizer, [prompts[i]], seq2seq,
+                                        max_prompt_tokens=max_prompt_tokens)[0]
+                previous = {"prediction": text, "reference": references[i]}
+                journal.put(i, previous)
+            predictions[i] = previous["prediction"]
+        journal.values()
+        stop_if_requested()
+    elif batch_size <= 1:
         for i in tqdm(valid, desc="Generating reviews"):
             try:
                 if seq2seq:
@@ -521,7 +549,16 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
         "attn_implementation": attn_implementation,
         "max_prompt_tokens": max_prompt_tokens,
     }
-    
+
+    if memory_profile:
+        results.update(
+            memory_profile=memory_profile, run_fingerprint=run_fingerprint,
+            model_revision=getattr(model.config, "_commit_hash", None),
+            metric_device="cpu", metric_batch_size=1,
+            prompt_truncated_count=sum(n > max_prompt_tokens for n in prompt_token_counts),
+            effective_prompt_tokens_max=min(max(prompt_token_counts, default=0), max_prompt_tokens),
+        )
+
     print(f"\nResults:")
     print(f"  Model: {model_name}")
     print(f"  ICL Examples: {num_examples}")
@@ -532,7 +569,7 @@ def run_icl_inference(model_name: str, num_examples: int, selection_method: str 
     print(f"  Example Reductions: {example_reduction_count}/{len(test_data)}")
     print(f"  BLEU-4: {metric_values['bleu_4']:.4f}")
     print(f"  Exact Match: {metric_values['exact_match']:.4f}")
-    
+
     return results
 
 
@@ -542,12 +579,12 @@ def main():
     global DATASET_NAME
 
     parser = argparse.ArgumentParser(description="Run In-Context Learning (ICL) inference for code review generation")
-    
+
     # Model arguments
     parser.add_argument("--model_name", type=str, required=True,
                        choices=["codet5", "plbart", "qwen15", "qwen25", "qwen25-0.5b", "qwen25-14b"],
                        help="Name of the model to use")
-    
+
     # ICL arguments
     parser.add_argument("--num_examples", type=int, default=3,
                        help="Number of ICL examples to use (default: 3)")
@@ -569,13 +606,15 @@ def main():
     parser.add_argument("--max-prompt-tokens", dest="max_prompt_tokens", type=int, default=None,
                        help="Explicit prompt budget: drop demos from the end until the prompt "
                             "fits (default: legacy greedy fit against the model context)")
+    parser.add_argument("--memory-profile", choices=["a5000"], default=None,
+                        help="Batch-1 SDPA with bounded context and durable row recovery")
     parser.add_argument("--batch-size", dest="batch_size", type=int, default=1,
                        help="Batched left-padded generation (1 = legacy per-sample; bf16 "
                             "batching may change rare beam ties - pin one size per model)")
     parser.add_argument("--attn-implementation", dest="attn_implementation", default=None,
                        help="Override attn implementation (default: legacy flash_attention_2 "
                             "on CUDA; use sdpa locally)")
-    
+
     # Data arguments
     parser.add_argument("--test_data_path", type=str, default=None,
                        help="Path to test dataset JSONL file (default: from the --dataset registry)")
@@ -583,7 +622,7 @@ def main():
                        help="Path to training dataset JSONL file (default: from the --dataset registry)")
     parser.add_argument("--max_samples", type=int, default=None,
                        help="Maximum number of test samples to process")
-    
+
     # Output arguments
     parser.add_argument("--output_path", type=str, default=None,
                        help="Path to save results JSON file")
@@ -618,6 +657,21 @@ def main():
     if args.train_data_path is None:
         args.train_data_path = str(dataset_cfg["data_files"]["train"])
 
+    if args.memory_profile:
+        if args.output_path is None and args.results_dir == "assets/results/icl/":
+            raise SystemExit("A5000 ICL requires an explicit isolated --results_dir or --output_path")
+        if args.batch_size != 1 or args.model_name not in ("qwen25", "qwen15", "qwen25-0.5b"):
+            raise SystemExit("A5000 ICL supports batch 1 on the three original causal models")
+        if args.attn_implementation not in (None, "sdpa"):
+            raise SystemExit("A5000 ICL requires SDPA")
+        if judge_config is not None:
+            raise SystemExit("Run the separate judge phase after A5000 inference")
+        args.attn_implementation = "sdpa"
+        args.prompt_version = "v2"
+        args.max_prompt_tokens = 2048 if args.max_prompt_tokens is None else args.max_prompt_tokens
+        if not 1 <= args.max_prompt_tokens <= 2048:
+            raise SystemExit("A5000 ICL prompt budget must be in [1, 2048]")
+
     # Generate output path if not provided (legacy name when every new flag is
     # at its default, so revision outputs can never overwrite legacy artifacts)
     if args.output_path is None:
@@ -628,85 +682,106 @@ def main():
                          or args.batch_size != 1 or args.attn_implementation is not None))
         args.output_path = os.path.join(args.results_dir, filename)
 
-    if args.skip_if_complete:
-        targets = [args.output_path]
-        if args.judge_output_path:
-            targets.append(args.judge_output_path)
-        if all(os.path.exists(path) for path in targets):
-            print(f"skip-if-complete: {', '.join(targets)} already present; nothing to do")
-            return
+    from contextlib import nullcontext
+    from src.training.recovery import (RunLock, bind_identity, file_digest, atomic_json,
+                                       install_stop_handlers, stop_if_requested)
+    run_fingerprint = None
+    with (RunLock(args.output_path + ".lock") if args.memory_profile else nullcontext()):
+        if args.memory_profile:
+            if Path(args.output_path).exists() and not Path(args.output_path + ".identity.json").exists():
+                raise SystemExit("Refusing to overwrite a result not bound to this A5000 profile")
+            identity = {key: value for key, value in vars(args).items()
+                        if key not in ("skip_if_complete", "verbose", "upload")}
+            identity["train_data_sha256"] = file_digest(args.train_data_path)
+            identity["test_data_sha256"] = file_digest(args.test_data_path)
+            run_fingerprint = bind_identity(args.output_path + ".identity.json", identity)
+            install_stop_handlers()
+        if args.skip_if_complete:
+            targets = [args.output_path]
+            if args.judge_output_path:
+                targets.append(args.judge_output_path)
+            if all(os.path.exists(path) for path in targets):
+                if args.memory_profile:
+                    from src.training.recovery import validate_icl_result
+                    validate_icl_result(args.output_path, run_fingerprint)
+                print(f"skip-if-complete: {', '.join(targets)} already present; nothing to do")
+                return
 
-    # Run ICL inference
-    results = run_icl_inference(
-        model_name=args.model_name,
-        num_examples=args.num_examples,
-        selection_method=args.selection_method,
-        test_data_path=args.test_data_path,
-        train_data_path=args.train_data_path,
-        output_path=args.output_path,
-        max_samples=args.max_samples,
-        seed=args.seed,
-        max_context_utilization=args.max_context_utilization,
-        verbose=args.verbose,
-        dataset_name=args.dataset,
-        prompt_version=args.prompt_version,
-        demo_seed=args.demo_seed,
-        batch_size=args.batch_size,
-        attn_implementation=args.attn_implementation,
-        max_prompt_tokens=args.max_prompt_tokens,
-        allow_exact_match=args.allow_exact_match,
-    )
-    
-    if judge_config is None:
-        # Save results to JSON
-        os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-        with open(args.output_path, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"Results saved to: {args.output_path}")
-    elif args.judge_output_path:
-        # Save the normal artifact first, then write the judged copy separately.
-        save_json_result(args.output_path, results)
-        print(f"Results saved to: {args.output_path}")
-        judged_results = dict(results)
-        append_judge_results_to_icl(
-            judged_results,
-            args.test_data_path,
-            args.max_samples,
-            DATASET_NAME,
-            judge_config,
-            args
+        # Run ICL inference
+        results = run_icl_inference(
+            model_name=args.model_name,
+            num_examples=args.num_examples,
+            selection_method=args.selection_method,
+            test_data_path=args.test_data_path,
+            train_data_path=args.train_data_path,
+            output_path=args.output_path,
+            max_samples=args.max_samples,
+            seed=args.seed,
+            max_context_utilization=args.max_context_utilization,
+            verbose=args.verbose,
+            dataset_name=args.dataset,
+            prompt_version=args.prompt_version,
+            demo_seed=args.demo_seed,
+            batch_size=args.batch_size,
+            attn_implementation=args.attn_implementation,
+            max_prompt_tokens=args.max_prompt_tokens,
+            allow_exact_match=args.allow_exact_match,
+            memory_profile=args.memory_profile, run_fingerprint=run_fingerprint,
         )
-        save_json_result(args.judge_output_path, judged_results)
-        print(f"Judged results saved to: {args.judge_output_path}")
-    else:
-        append_judge_results_to_icl(
-            results,
-            args.test_data_path,
-            args.max_samples,
-            DATASET_NAME,
-            judge_config,
-            args
-        )
-        # Save results to JSON
-        save_json_result(args.output_path, results)
-        print(f"Judged results saved to: {args.output_path}")
-    
-    # Upload to Hugging Face Hub (opt-in; was unconditional before)
-    if args.upload:
-        if is_placeholder_repo(HUGGINGFACE_REPO_ID):
-            print(f"WARNING: HUGGINGFACE_REPO_ID is a placeholder ({HUGGINGFACE_REPO_ID}); skipping upload.")
-        else:
-            huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
 
-            api = huggingface_hub.HfApi()
-            api.upload_large_folder(
-                folder_path=os.path.dirname(args.output_path),
-                repo_id=HUGGINGFACE_REPO_ID,
-                repo_type="model"
+        if judge_config is None:
+            # Save results to JSON
+            Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)
+            if args.memory_profile:
+                stop_if_requested()
+                atomic_json(args.output_path, results)
+            else:
+                with open(args.output_path, "w") as f:
+                    json.dump(results, f, indent=2)
+            print(f"Results saved to: {args.output_path}")
+        elif args.judge_output_path:
+            # Save the normal artifact first, then write the judged copy separately.
+            save_json_result(args.output_path, results)
+            print(f"Results saved to: {args.output_path}")
+            judged_results = dict(results)
+            append_judge_results_to_icl(
+                judged_results,
+                args.test_data_path,
+                args.max_samples,
+                DATASET_NAME,
+                judge_config,
+                args
             )
+            save_json_result(args.judge_output_path, judged_results)
+            print(f"Judged results saved to: {args.judge_output_path}")
+        else:
+            append_judge_results_to_icl(
+                results,
+                args.test_data_path,
+                args.max_samples,
+                DATASET_NAME,
+                judge_config,
+                args
+            )
+            # Save results to JSON
+            save_json_result(args.output_path, results)
+            print(f"Judged results saved to: {args.output_path}")
 
-    print("ICL inference completed successfully!")
+        # Upload to Hugging Face Hub (opt-in; was unconditional before)
+        if args.upload:
+            if is_placeholder_repo(HUGGINGFACE_REPO_ID):
+                print(f"WARNING: HUGGINGFACE_REPO_ID is a placeholder ({HUGGINGFACE_REPO_ID}); skipping upload.")
+            else:
+                huggingface_hub.login(token=os.getenv("HUGGINGFACE_TOKEN"))
 
+                api = huggingface_hub.HfApi()
+                api.upload_large_folder(
+                    folder_path=os.path.dirname(args.output_path),
+                    repo_id=HUGGINGFACE_REPO_ID,
+                    repo_type="model"
+                )
+
+        print("ICL inference completed successfully!")
 
 if __name__ == "__main__":
     main()
