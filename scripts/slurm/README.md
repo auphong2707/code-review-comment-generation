@@ -106,4 +106,54 @@ Training uses `<root>/<dataset>/<stem>_official_<lr>[_seed<n>]`; sweeps are in
 `<root>/<dataset>/sweeps`. ICL uses `<root>/icl/<dataset>`. Judge roots are separate
 `qwen-revision`, `llama-legacy`, `llama-revision` directories. Frozen artifacts remain
 inputs. Agent tests use scratch directories; server experiments produce their own
-isolated output trees. Runtime estimates remain pending measured server throughput.
+isolated output trees. The planning scenarios in BUDGET.md must be calibrated with server throughput.
+
+## Review and planning budget (2026-09-11)
+
+See [BUDGET.md](BUDGET.md) for counts, explicit timing assumptions and calibration.
+The default queue is approximately 1,260–6,460 occupied hours in the planning
+scenarios; all supported optional work is 1,565–7,980 hours. These are unmeasured
+scenarios, not an A5000 performance claim.
+
+Slurm copies the submitted script to its spool directory. All wrappers locate
+`common.sh` through `RCG_ROOT` or `SLURM_SUBMIT_DIR`, so the complete tracked checkout
+must exist on the execution node at that path. `environment.yml` includes pytest
+for the infrastructure gate; provision it before submission.
+
+For J after all supported optional blocks, leave global RUN_P* unset and set:
+
+```bash
+RCG_A_RUN_P1=1 RCG_B_RUN_P2=1 RCG_C_RUN_P2=1 \
+  sbatch --partition=YOUR_A5000_PARTITION scripts/slurm/16_campaign_j.sbatch
+```
+
+The completion checker accepts `RCG_<A|B|C|D>_<RUN_P0|RUN_P1|RUN_P2|SEEDS>`
+overrides. These select expected coverage only: launch producers with their own
+RUN_P*/SEEDS flags. Preserve these settings when resubmitting J. A global RUN_P2=1
+would enable D's explicitly unsupported ordinary LoRA request.
+
+## Transfer preparation
+
+Git carries code, environment.yml, scripts, and paper/generated/cr_judge_subset.json.
+Data and model files require a separate server transfer; do not add assets or ignored
+AI plans to git. Before qualification, preserve these relative paths:
+
+- `assets/data/Trans_Review/{train,val,test}.jsonl` and
+  `assets/data/Code_Review/msg-{train,valid,test}.jsonl` (about 4.18 GB decimal total).
+- Local judge weights/tokenizers at `assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct`
+  and `assets/models/llm-judge/Llama-3.1-8B-Instruct` (latter requires authorized access).
+- Legacy artifacts at their original `assets/models/...` paths for the mock gate,
+  plus `assets/models/llm-as-judge/table-results/inputs/` for legacy Llama judging.
+- Base-model, tokenizer, evaluate/BERTScore and NLTK caches, or provision them on
+  the server before starting timed jobs. Base models use Hub IDs; copying legacy
+  adapters alone does not supply their base weights. `HF_HOME` defaults to
+  `assets/cache/huggingface`; keep symlink targets when transferring caches.
+
+Create `assets/logs/slurm` before sbatch (Slurm opens output before shell startup).
+Use persistent storage for revision roots, recovery checkpoints, judge caches and
+logs, with room for best/latest checkpoints for every retained run; the input-only
+transfer size is not the final storage requirement. Keep legacy inputs read-only.
+A failed conditional 14B pilot stops 00–07 before later pilots. To qualify independent
+ICL/judge work use `ONLY='probe_icl_|probe_qwen-judge|probe_llama-judge'` on the same
+infra file; a filtered job exits 75 deliberately. Submit only campaigns whose own
+admission reports pass; unavailable D requires explicitly partial J prerequisites.

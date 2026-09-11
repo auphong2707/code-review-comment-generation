@@ -46,12 +46,35 @@ def test_missing_campaign_cannot_be_complete(tmp_path, monkeypatch, capsys):
     assert 'incomplete' in capsys.readouterr().out
 
 
+@pytest.mark.parametrize('root_variable', ['SLURM_SUBMIT_DIR', 'RCG_ROOT'])
+def test_spooled_scripts_resolve_repository_helpers(tmp_path, root_variable):
+    """Slurm copies only the sbatch file, not its sibling common.sh."""
+    for script in (ROOT / 'scripts/slurm').glob('*.sbatch'):
+        spool = tmp_path / 'slurm_script'
+        spool.write_text(script.read_text())
+        env = clean_env()
+        env.pop('RCG_ROOT', None)
+        env.pop('SLURM_SUBMIT_DIR', None)
+        env[root_variable] = str(ROOT)
+        subprocess.run(['bash', str(spool)], cwd=tmp_path, env=env,
+                       capture_output=True, check=True)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['slurm_script']
+
+
 def test_profile_seed42_uses_default_name(tmp_path):
     command = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
                '--memory-profile', 'a5000', '--results-root', str(tmp_path), '--dry-run']
     default = json.loads(subprocess.check_output(command, cwd=ROOT))
     explicit = json.loads(subprocess.check_output(command + ['--seed', '42'], cwd=ROOT))
     assert default == explicit
+
+
+def test_per_phase_scope_can_check_all_supported_optional_work(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, 'environ', clean_env())
+    monkeypatch.setenv('RCG_A_RUN_P1', '1')
+    monkeypatch.setenv('RCG_B_RUN_P2', '1')
+    monkeypatch.setenv('RCG_C_RUN_P2', '1')
+    assert {phase: len(status.commands(phase, tmp_path)) for phase in status.SCRIPTS} == dict(A=64, B=20, C=78, D=8)
 
 
 def completed_sweep(root, index, metric):
@@ -173,3 +196,35 @@ def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp
     identity['seed'] = 3
     (root/'run_identity.json').write_text(json.dumps(dict(identity=identity, fingerprint=fingerprint(identity))))
     assert status.main(['A', '--results-root', str(tmp_path)]) == 1
+
+
+def test_campaign_gate_validates_sweep_subset_coverage(tmp_path, monkeypatch):
+    from src.train import build_parser, recovery_identity, resolve_protocol_overrides
+    from src.training.registry import get_spec, resolve_run
+    from src.training.memory_profile import apply_memory_profile
+    data = tmp_path / 'data.jsonl'
+    data.write_text('{"fixture": 1}\n{"fixture": 2}\n')
+    monkeypatch.setitem(status.DATASET_CONFIGS, 'trans_review',
+                        {'data_files': dict(train=str(data), validation=str(data), test=str(data))})
+    argv = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
+            '--experiment_id', '0', '--subset', '0.5', '--dataset', 'trans_review',
+            '--results-root', str(tmp_path), '--memory-profile', 'a5000']
+    args = build_parser().parse_args(argv[3:])
+    model, method, spec = get_spec(args.model, args.method)
+    spec, overrides = apply_memory_profile(spec, resolve_protocol_overrides(model, args),
+                                          'a5000', model, method)
+    run = resolve_run(spec, experiment_id=0, results_root=args.results_root)
+    root = Path(run['experiment_results_dir']); root.mkdir()
+    identity = recovery_identity(spec, overrides, args, run)
+    stamp = fingerprint(identity)
+    (root / 'run_identity.json').write_text(json.dumps(dict(identity=identity, fingerprint=stamp)))
+    result = {k: 0 for k in ['test_bleu_4', 'test_exact_match', 'test_rouge', 'test_bertscore', 'test_meteor']}
+    result.update(run_fingerprint=stamp, expected_test_rows=1,
+                  raw_data=[dict(prediction='x', reference='y')])
+    path = root / 'complete_results.json'
+    path.write_text(json.dumps(result))
+    assert status.training_result(argv, 'D') == path
+    result.update(expected_test_rows=2, raw_data=result['raw_data'] * 2)
+    path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match='coverage incomplete'):
+        status.training_result(argv, 'D')

@@ -12,7 +12,7 @@
 # Submit from repository root, selecting the site's A5000 partition with sbatch.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=12
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 
 
 WANDB_TAGS="${WANDB_TAGS:-campaignA}"

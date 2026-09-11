@@ -12,7 +12,7 @@
 # Submit from repository root, selecting the site's A5000 partition with sbatch.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=00_07
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 # One combined verification job for historical phases 00–07; no destructive cleanup.
 run_step infra_pytest "$PYTHON" -m pytest -q
 run_step infra_train_help "$PYTHON" -m src.train --help

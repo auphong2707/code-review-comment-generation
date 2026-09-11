@@ -39,6 +39,12 @@ def commands(phase, results_root):
                RCG_ROOT=str(ROOT), RCG_RESULTS_ROOT=str(results_root))
     for key in ("ONLY", "SKIP"):
         env.pop(key, None)
+    # J checks several producers in one process. Their optional block meanings
+    # differ (e.g. B/C P2 is supported while D P2 is forbidden).
+    for key in ("RUN_P0", "RUN_P1", "RUN_P2", "SEEDS"):
+        scoped = f"RCG_{phase}_{key}"
+        if scoped in env:
+            env[key] = env[scoped]
     result = subprocess.run(["bash", str(ROOT / "scripts/slurm" / (SCRIPTS[phase] + ".sbatch"))],
                             cwd=ROOT, env=env, text=True, capture_output=True, check=True)
     return [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{"label":')]
@@ -64,7 +70,8 @@ def training_result(argv, phase):
     if saved != {"identity": expected, "fingerprint": fingerprint(expected)}:
         raise ValueError(f"Configuration/input mismatch: {path.parent}")
     value = validate_training_result(path, saved["fingerprint"])
-    if len(value["raw_data"]) != row_count(DATASET_CONFIGS[args.dataset]["data_files"]["test"]):
+    expected_rows = int(row_count(DATASET_CONFIGS[args.dataset]["data_files"]["test"]) * args.subset)
+    if len(value["raw_data"]) != expected_rows:
         raise ValueError(f"Test coverage incomplete: {path}")
     return path
 

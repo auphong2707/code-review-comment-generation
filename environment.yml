@@ -124,6 +124,7 @@ dependencies:
   - ucx=1.18.1=h990bcc0_2
   - zstd=1.5.7=hb8e6e7a_2
   - pip:
+      - pytest==8.3.5
       - absl-py==2.3.1
       - accelerate==1.9.0
       - aiohappyeyeballs==2.6.1

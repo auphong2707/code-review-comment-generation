@@ -12,7 +12,7 @@
 # Submit from repository root, selecting the site's A5000 partition with sbatch.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=15
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 # Only 14B QLoRA is hardware-admissible; never relabel it as ordinary LoRA.
 if [[ "${RUN_14B_LORA:-0}" == 1 || "${RUN_P2:-0}" == 1 ]]; then
     echo "Ordinary 14B BF16 LoRA cannot reside on 24 GB; no CPU-offload training path is qualified." >&2

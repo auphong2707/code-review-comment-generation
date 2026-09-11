@@ -12,7 +12,7 @@
 # Submit from repository root, selecting the site's A5000 partition with sbatch.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=13
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 # GaLore is unavailable until a separately qualified full-state/offload path exists.
 # DoRA always gets a matching A5000 LoRA control at the identical LR and protocol.
 RUN_P0="${RUN_P0:-0}"; RUN_P1="${RUN_P1:-1}"; RUN_P2="${RUN_P2:-0}"

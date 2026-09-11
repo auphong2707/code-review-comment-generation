@@ -12,7 +12,7 @@
 # Submit from repository root, selecting the site's A5000 partition with sbatch.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=14
-source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 RUN_P0="${RUN_P0:-1}"; RUN_P2="${RUN_P2:-0}"
 if [[ "${ICL_14B:-0}" == 1 ]]; then
     echo "14B ICL is not admitted by this profile; requires a separate quantized-inference qualification." >&2
