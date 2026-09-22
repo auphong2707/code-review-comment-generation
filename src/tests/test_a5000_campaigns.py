@@ -61,6 +61,28 @@ def test_spooled_scripts_resolve_repository_helpers(tmp_path, root_variable):
     assert sorted(p.name for p in tmp_path.iterdir()) == ['slurm_script']
 
 
+def test_launcher_preview_is_a_serial_smoke_gated_chain():
+    env = clean_env()
+    env.update(DRY='0', RCG_JSON='0', RCG_PYTHON='/bin/false')
+    for key in list(env):
+        if key.startswith(('RCG_A_', 'RCG_B_', 'RCG_C_', 'RCG_D_')):
+            env.pop(key)
+    for key in ('RCG_PROBES', 'J_REQUIRE_PHASES', 'RUN_REVISION', 'RUN_LEGACY', 'RUN_QWEN', 'RUN_LLAMA'):
+        env.pop(key, None)
+    output = subprocess.check_output(['bash', 'scripts/slurm/submit_revision.sh', '--preview'],
+                                     cwd=ROOT, env=env, text=True)
+    lines = output.splitlines()
+    assert len(lines) == 6
+    assert lines[0].endswith('00_07_infrastructure.sbatch ')
+    assert '--dependency=' not in lines[0]
+    for previous, line in zip(['00_07_infrastructure', '12_campaign_a', '13_campaign_b',
+                               '14_campaign_c', '15_campaign_d'], lines[1:]):
+        assert f'--dependency=afterok:JOB_ID_{previous}' in line
+    failed = subprocess.run(['bash', 'scripts/slurm/submit_revision.sh', '--preview'],
+                            cwd=ROOT, env=dict(env, RCG_PROBES='0'), capture_output=True)
+    assert failed.returncode == 2
+
+
 def test_profile_seed42_uses_default_name(tmp_path):
     command = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
                '--memory-profile', 'a5000', '--results-root', str(tmp_path), '--dry-run']

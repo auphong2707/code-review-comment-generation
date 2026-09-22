@@ -1,0 +1,27 @@
+# A100 server candidate stack; qualify with the first Slurm job before experiments.
+# Install torch separately from the official CUDA 12.4 wheel index (SERVER_SETUP.md).
+torch==2.5.1
+transformers==4.47.0
+tokenizers==0.21.4
+peft==0.14.0
+accelerate==1.2.1
+bitsandbytes==0.45.0
+datasets==3.2.0
+evaluate==0.4.5
+huggingface-hub==0.34.3
+numpy==1.26.4
+pyarrow==18.1.0
+pandas==2.2.3
+scipy==1.14.1
+scikit-learn==1.6.1
+wandb==0.19.1
+python-dotenv==1.1.1
+tqdm==4.67.1
+nltk==3.9.1
+rouge-score==0.1.2
+bert-score==0.3.13
+sentencepiece==0.2.0
+protobuf==5.29.3
+pytest==8.3.5
+rank-bm25==0.2.2
+galore-torch==1.0

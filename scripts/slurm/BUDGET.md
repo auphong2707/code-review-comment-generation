@@ -1,5 +1,10 @@
 # A5000 planning budget — 2026-09-11
 
+Historical reference only: the current jobs target A100 80GB. Run counts for the
+retained campaigns remain relevant, but these A5000 timing assumptions do not
+estimate A100 throughput. The current smoke also includes real inference integration
+checks. See README.md and SERVER_SETUP.md for the current queue and qualification.
+
 No A5000 run has been measured. These are **assumption-based planning scenarios**,
 not benchmark results, confidence intervals, deadlines or guaranteed bounds.
 For one serial A5000, provision roughly **1,260–6,460 occupied hours (53–269 days)**

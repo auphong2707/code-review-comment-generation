@@ -9,11 +9,12 @@
 #SBATCH --requeue
 #SBATCH --output=assets/logs/slurm/%x-%j.out
 #SBATCH --error=assets/logs/slurm/%x-%j.err
-# Submit from repository root, selecting the site's A5000 partition with sbatch.
+# Submit from repository root, selecting the site's A100 80GB partition/GRES.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=00_07
 source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
-# One combined verification job for historical phases 00–07; no destructive cleanup.
+# First job: software gate, recovery/memory pilots, then real inference integration.
+run_step infra_pip_check "$PYTHON" -m pip check
 run_step infra_pytest "$PYTHON" -m pytest -q
 run_step infra_train_help "$PYTHON" -m src.train --help
 run_step infra_icl_help "$PYTHON" -m src.icl_inference --help
@@ -45,8 +46,35 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
         run_step "probe_$model" "$PYTHON" tools/a5000_inference_probe.py --kind judge \
             --model "$model" --max-input-tokens "${JUDGE_MAX_INPUT_TOKENS:-4096}" --out-root "$PREFLIGHT_ROOT"
     done
+    # Synthetic pilots alone cannot check dataset parsing, retrieval, metrics or
+    # judge input/cache/output plumbing. Exercise those paths on bounded rows.
+    for dataset in trans_review acra_by_ls_pt; do
+        for model in qwen25-0.5b qwen25 qwen15; do
+            run_step "smoke_icl_${dataset}_${model}" "$PYTHON" -m src.icl_inference \
+                --model_name "$model" --dataset "$dataset" --prompt-version v2 \
+                --memory-profile a5000 --batch-size 1 --max-prompt-tokens 2048 \
+                --attn-implementation sdpa --num_examples 3 --selection_method bm25 \
+                --max_samples 2 --results_dir "$PREFLIGHT_ROOT/icl-smoke/$dataset" --skip-if-complete
+        done
+    done
+    run_step smoke_judge_subset test -r paper/generated/cr_judge_subset.json
+    run_step smoke_qwen_pipeline "$PYTHON" tools/update_llm_judge_tables.py \
+        --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/qwen-smoke" \
+        --judge-model-path assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct \
+        --judge-local-files-only --judge-device cuda --judge-k 3 --judge-batch-size 1 \
+        --judge-input-token-limit "${JUDGE_MAX_INPUT_TOKENS:-4096}"
+    run_step smoke_llama_pipeline "$PYTHON" tools/update_llm_judge_tables.py \
+        --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/llama-smoke" \
+        --reuse-inputs assets/models/llm-as-judge/table-results/inputs \
+        --sample-index-file paper/generated/cr_judge_subset.json \
+        --backend hf-chat --column-prefix llama_judge_ \
+        --judge-model-path assets/models/llm-judge/Llama-3.1-8B-Instruct \
+        --judge-local-files-only --judge-device cuda --judge-k 3 --judge-batch-size 1 \
+        --judge-top-k 20 --judge-repetition-penalty 1.05 --judge-seed 42 \
+        --judge-input-token-limit "${JUDGE_MAX_INPUT_TOKENS:-4096}"
 else
     echo "Code checks only. GPU campaigns still require individual admission reports."
+    [[ "$DRY" == 1 ]] || exit 75
 fi
 
 finish_report

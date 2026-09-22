@@ -9,15 +9,15 @@
 #SBATCH --requeue
 #SBATCH --output=assets/logs/slurm/%x-%j.out
 #SBATCH --error=assets/logs/slurm/%x-%j.err
-# Submit from repository root, selecting the site's A5000 partition with sbatch.
+# Submit from repository root, selecting the site's A100 80GB partition/GRES.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=13
 source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 # GaLore is unavailable until a separately qualified full-state/offload path exists.
-# DoRA always gets a matching A5000 LoRA control at the identical LR and protocol.
+# DoRA always gets a matching LoRA control at the identical LR and protocol.
 RUN_P0="${RUN_P0:-0}"; RUN_P1="${RUN_P1:-1}"; RUN_P2="${RUN_P2:-0}"
 if [[ "$RUN_P0" == 1 || "${RUN_GALORE:-0}" == 1 ]]; then
-    echo "GaLore is not admitted on 24 GB: layerwise optimizer requires separate accumulation/resume validation." >&2
+    echo "GaLore is outside this profile: optimizer accumulation/resume requires separate validation." >&2
     exit 2
 fi
 paired_run() {

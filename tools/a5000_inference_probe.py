@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded ICL/judge VRAM pilots. Execute only on the user-allocated A5000."""
+"""Bounded ICL/judge VRAM pilots. Execute only on the user-allocated server GPU."""
 import argparse
 from contextlib import nullcontext
 import json
@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.a5000_preflight import runtime_digest, environment_identity, check_report, require_gpu
+from tools.a5000_preflight import runtime_digest, environment_identity, check_report, require_gpu, hardware_policy
 from src.training.recovery import atomic_json, install_stop_handlers, stop_if_requested
 
 JUDGES = {
@@ -62,7 +62,8 @@ def run_probe(args, digest):
             "max_output_tokens": output_tokens, "batch_size": 1, "num_beams": beams,
             "model_revision": getattr(model.config, "_commit_hash", None),
             "peak_reserved_gib": peak, "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
-            "admitted": peak <= 22,
+            "total_memory_gib": torch.cuda.get_device_properties(0).total_memory / 2**30,
+            "admitted": peak <= hardware_policy()[3],
             "note": "Maximum-length synthetic memory pilot; no quality scores or campaign claims"}
 
 

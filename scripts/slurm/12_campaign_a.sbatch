@@ -9,7 +9,7 @@
 #SBATCH --requeue
 #SBATCH --output=assets/logs/slurm/%x-%j.out
 #SBATCH --error=assets/logs/slurm/%x-%j.err
-# Submit from repository root, selecting the site's A5000 partition with sbatch.
+# Submit from repository root, selecting the site's A100 80GB partition/GRES.
 # Manual resubmission of this SAME file recovers committed progress. No automatic requeue.
 RCG_PHASE=12
 source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"

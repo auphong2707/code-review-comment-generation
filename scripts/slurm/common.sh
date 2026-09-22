@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
-# Shared A5000 phase runtime. DRY=1 is read-only and needs only Bash/Python.
+# Shared server runtime. Plain DRY=1 previews need only Bash (RCG_JSON=0).
 set -euo pipefail
 ROOT_DIR="${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
 cd "$ROOT_DIR"
 [[ -f src/train.py ]] || { echo "Submit from repository root or set RCG_ROOT" >&2; exit 2; }
 DRY="${DRY:-0}"
 PYTHON="${RCG_PYTHON:-python}"
-REVISION_ROOT="${RCG_RESULTS_ROOT:-$ROOT_DIR/assets/results/revision-a5000}"
-PREFLIGHT_ROOT="${RCG_PREFLIGHT_ROOT:-$ROOT_DIR/assets/results/a5000-preflight}"
+export RCG_TARGET_GPU="${RCG_TARGET_GPU:-a100_80gb}"
+REVISION_ROOT="${RCG_RESULTS_ROOT:-$ROOT_DIR/assets/results/revision-a100}"
+PREFLIGHT_ROOT="${RCG_PREFLIGHT_ROOT:-$ROOT_DIR/assets/results/a100-preflight}"
 JOB_TAG="${RCG_PHASE:-${SLURM_JOB_NAME:-local}}"
-LOG_ROOT="${RCG_LOG_ROOT:-$ROOT_DIR/assets/logs/a5000}/$JOB_TAG"
+LOG_ROOT="${RCG_LOG_ROOT:-$ROOT_DIR/assets/logs/a100}/$JOB_TAG"
 export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1 WANDB_MODE="${WANDB_MODE:-offline}" TOKENIZERS_PARALLELISM=false
 STEPS_OK=(); STEPS_FAILED=(); STEPS_SKIPPED=()
 STOP_REQUESTED=0
 ACTIVE_PID=""
 if [[ "$DRY" != 1 ]]; then
+    [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "Run real jobs via Slurm on the server; use DRY=1 locally." >&2; exit 2; }
     if [[ -n "${RCG_CONDA_ENV:-}" ]]; then
         source "${CONDA_SH:?Set CONDA_SH when selecting RCG_CONDA_ENV}"
         set +u; conda activate "$RCG_CONDA_ENV"; set -u
     fi
+    "$PYTHON" -c 'from tools.a5000_preflight import require_gpu; require_gpu()'
     export WANDB_DIR="${WANDB_DIR:-$LOG_ROOT/wandb}"
     export HF_HOME="${HF_HOME:-$ROOT_DIR/assets/cache/huggingface}"
     mkdir -p "$LOG_ROOT" "$WANDB_DIR"
-    "$PYTHON" -c 'from tools.a5000_preflight import require_gpu; require_gpu()'
 fi
 
 banner() { echo "$*"; }

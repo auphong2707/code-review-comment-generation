@@ -1,159 +1,137 @@
-# A5000 server campaigns
+# A100 80GB revision campaigns
 
-Exactly six jobs cover phases 00–07 and 12–16. Each requests one GPU and at most
-72 hours. Submit from the repository root, using your site's A5000 partition/GRES.
-The runtime rejects other GPUs. Phases 08–11 and 17–20 are outside this migration.
+Start with [SERVER_SETUP.md](SERVER_SETUP.md) to create the server environment and
+transfer inputs. The six existing sbatch files are retained as a small serial queue:
 
-| Script | Selected work by default |
+| Order | Job | Default work |
+|---|---|---|
+| 1 | `00_07_infrastructure.sbatch` | Dependency/unit/mock checks; 35 training recovery pilots; 3 ICL and 2 judge memory pilots; small real ICL/judge pipelines |
+| 2 | `12_campaign_a.sbatch` | 54 TransReview runs: 18 configurations × seeds 42, 1, 2 |
+| 3 | `13_campaign_b.sbatch` | 8 DoRA runs and 8 matching LoRA controls |
+| 4 | `14_campaign_c.sbatch` | 66 ICL v2 runs |
+| 5 | `15_campaign_d.sbatch` | 14B QLoRA: 3-point sweep → official, both datasets |
+| 6 | `16_campaign_j.sbatch` | Qwen revision judging; Llama legacy/revision judging |
+
+Each job requests one GPU, 8 CPUs, 64GB host RAM and up to 72 hours. The default
+launcher chains all six with `afterok` dependencies. This serializes shared LoRA
+controls and holds judging until all producers succeed. A failed or interrupted
+smoke job cannot release campaigns. Six job definitions may need more than six
+allocations if work exceeds walltime.
+
+## Local review: no Python
+
+Only Bash/static checks are permitted locally for this task, including on the RTX
+3090. Do not run pytest, Python dry runs, imports, mocks or model workloads locally.
+
+```bash
+for script in scripts/slurm/*.sh scripts/slurm/*.sbatch; do bash -n "$script"; done
+DRY=1 RCG_JSON=0 RCG_PYTHON=/bin/false bash scripts/slurm/12_campaign_a.sbatch
+bash scripts/slurm/submit_revision.sh --preview
+```
+
+Plain `DRY=1 RCG_JSON=0` prints commands without Python, writes or conda activation.
+`RCG_JSON=1` invokes Python and is reserved for the server's completion checker.
+Real wrappers require a Slurm allocation and reject GPUs other than the selected
+hardware target. No RTX 3090 qualification or runnability claim follows from shell checks.
+
+## Launch on the server
+
+After setup, export the environment and site settings from SERVER_SETUP.md:
+
+```bash
+bash scripts/slurm/submit_revision.sh --preview
+bash scripts/slurm/submit_revision.sh --submit
+```
+
+The launcher defaults to preview. Only the user's explicit `--submit` calls sbatch.
+It accepts `RCG_PARTITION`, `RCG_ACCOUNT`, `RCG_QOS` and `RCG_GRES`; use the site's
+A100 80GB resource type. No fixed partition name can be portable across clusters.
+Run from the repository root or set absolute `RCG_ROOT`. The helper uses that path
+or `SLURM_SUBMIT_DIR`, so scripts work when copied to Slurm's spool directory.
+
+The first job exercises training, optimizer state, validation, checkpoint interruption
+and reload, generation and metrics. It also runs full-length synthetic inference
+pilots and real two-row ICL / three-row judge integration checks. Training and
+inference admissions require peak reserved VRAM ≤76 GiB on a full A100 80GB.
+Reports bind to source, software, driver and target hardware. Changes require
+requalification. Source/settings must remain fixed while queued jobs are running.
+
+These are bounded smoke tests, not a guarantee that every full-corpus input works.
+Judge inputs over `JUDGE_MAX_INPUT_TOKENS` fail explicitly; increase that limit only
+after rerunning matching judge pilots. `RCG_PROBES=0` or filtered execution exits
+75 in real jobs, so an incomplete smoke cannot satisfy an `afterok` dependency.
+
+## Research scope and conservative settings
+
+The historical CLI name `--memory-profile a5000` is retained as the numerical and
+recovery policy: microbatch 1, effective batch preserved by accumulation, generation
+batch 1, SDPA, checkpointing, CPU BERTScore and durable progress. The Slurm hardware
+target is independently `RCG_TARGET_GPU=a100_80gb`. This intentionally preserves
+the retained research comparisons; it does not tune throughput to fill 80GB.
+
+The existing excluded scope stays excluded: 7B FMFT (missing DeepSpeed config),
+GaLore (unqualified optimizer/recovery path), ordinary 14B LoRA and 14B ICL
+(not enabled in this conservative profile). The latter exclusions are policy limits,
+not claims that those workloads cannot fit on an A100. They need a separate
+qualification extension before being added. DoRA/QLoRA are not substitutes for
+missing full-FT/LoRA evidence. Later analysis/manuscript phases are outside this queue.
+
+Five B controls reuse matching A outputs. A seed 42 uses the canonical leaf name.
+Optional A `RUN_P1=1` adds ten grid commands (eight new outputs); B `RUN_P2=1`
+adds two CR DoRA/control pairs; C `RUN_P2=1` adds twelve ICL runs. A accepts `SEEDS`.
+The full-chain launcher rejects scope overrides; use individual submissions for
+these options and preserve the same scope during resume and completion checks.
+
+## Recovery and dependencies
+
+USR1 is sent ten minutes before walltime; the shell forwards it to the process
+group and waits for committed progress before exiting 75. `--requeue` permits
+administrator/scheduler requeueing; it does not automatically continue timed-out work.
+Resubmit the same script, checkout, settings and persistent output roots.
+
+If an upstream job fails, downstream `afterok` dependencies do not automatically
+follow a replacement job ID. After resubmitting, either retarget pending dependencies
+with `scontrol update JobId=<pending-id> Dependency=afterok:<replacement-id>`,
+or cancel the obsolete pending chain and submit a fresh chain yourself. Check the
+actual queue state first. Do not leave both chains able to write the same outputs.
+Reusing a fresh complete chain validates/skips finished runs.
+
+Training commits recovery state every `RCG_RECOVERY_STEPS` (default 100) optimizer
+steps. Test/ICL predictions persist per row and judge results per cache entry.
+Hard kills can replay uncommitted work; validation must finish before a safe stop.
+Measure checkpoint/validation time and increase the warning interval when needed.
+An incomplete LR bracket cannot select an official LR; failed commands stop the job.
+
+## Paths and advanced scope
+
+| Variable | Default |
 |---|---|
-| `00_07_infrastructure.sbatch` | Code/mock checks, 35 training lifecycle pilots, 3 ICL and 2 judge memory pilots |
-| `12_campaign_a.sbatch` | 54 TransReview runs: 18 configurations × seeds 42, 1, 2 |
-| `13_campaign_b.sbatch` | 8 DoRA runs and 8 matching A5000 LoRA controls |
-| `14_campaign_c.sbatch` | 66 ICL v2 runs, actual input cap 2048 tokens |
-| `15_campaign_d.sbatch` | 14B QLoRA: 3-point sweep then official run, both datasets |
-| `16_campaign_j.sbatch` | Qwen over revision outputs; Llama over legacy and revision outputs, CR subset |
-
-A seed-42 run uses the canonical name without a seed suffix under the A5000 profile.
-Five B controls reuse A outputs. A's optional `RUN_P1=1` adds ten grid commands,
-eight new outputs. B's `RUN_P2=1` adds two CR 7B DoRA/control pairs. C's
-`RUN_P2=1` adds twelve 10-shot demo-seed runs. These options must be preserved when
-resubmitting or checking a selected scope. A accepts `SEEDS` (default `42 1 2`).
-
-Ordinary 14B BF16 LoRA, 7B FMFT and GaLore are unavailable in this profile.
-Their missing research evidence must be disclosed; QLoRA/DoRA are separate methods.
-All remaining combinations require a matching measured admission report before
-campaign training/inference. No A5000 memory or throughput claim follows from CPU tests.
-
-## Preview and server launch
-
-Local verification is limited to unit tests, mocks and tiny CPU smoke tests. Do not
-run pretrained-model smoke tests or these jobs locally. A safe command-only preview is:
-
-```bash
-DRY=1 RCG_PYTHON=.venv/bin/python bash scripts/slurm/12_campaign_a.sbatch
-```
-
-`DRY=1` does not activate conda, load models, read secrets or create output directories.
-On the server, provision the declared environment, datasets, legacy artifacts and
-local judge models first. These files are gitignored. No script installs packages,
-logs into HF, uploads results, or submits another job. Use an already activated
-Python environment, `RCG_PYTHON`, or both `CONDA_SH` and `RCG_CONDA_ENV`.
-
-The user launches the server jobs, for example (replace `YOUR_A5000_PARTITION`):
-
-```bash
-mkdir -p assets/logs/slurm
-sbatch --partition=YOUR_A5000_PARTITION scripts/slurm/00_07_infrastructure.sbatch
-# After qualification completes, submit 12, 13, 14, 15; submit 16 after producers finish.
-sbatch --partition=YOUR_A5000_PARTITION scripts/slurm/12_campaign_a.sbatch
-```
-
-Phase 00–07 includes real server pilots by default. `RCG_PROBES=0` selects code/mock
-checks only and does not qualify campaigns. Pilots exercise optimizer, validation,
-checkpoint interruption/reload and generation, with maximum-length inputs. Admission
-requires measured peak reserved memory <=22 GiB on an A5000. Reports bind to source
-and environment; changing either requires requalification. Judge input over its admitted
-budget fails explicitly without truncating the rubric. Increase
-`JUDGE_MAX_INPUT_TOKENS` only after rerunning matching judge pilots at that budget.
-
-## Recovery across allocations
-
-Slurm sends USR1 to the batch shell ten minutes before the limit. The shell forwards
-it to the active process group, waits for a safe stop and exits 75. Resubmit the
-**same script, settings, checkout and output roots** to continue. `--requeue` permits
-requeueing but does not automatically resubmit a timed-out job.
-
-Training resumes optimizer/scheduler/RNG state from the latest committed checkpoint
-(default every 100 optimizer steps). Validation boundaries finish evaluation/save before
-stopping. Test and ICL generations persist per row; judge generations persist per cache
-entry. A hard kill can replay work since the last committed checkpoint/row/call,
-including an unfinished validation pass. Measure save and validation time on the server
-and increase the warning interval if ten minutes is insufficient. Checkpoint files must
-stay on persistent storage. Concurrent writers to the same training/ICL run are rejected.
-
-Completed outputs are validated before skipping. An incomplete sweep cannot select an
-official LR. Failures stop dependent steps immediately. `ONLY=<regex>` and `SKIP=<regex>`
-are useful for diagnosis; filtered real execution exits 75 and does not claim campaign
-completion. A later unfiltered submission validates/skips completed work.
-
-Read-only producer completion checks use the exact selected sbatch run lists:
-
-```bash
-python tools/campaign_status.py A --results-root assets/results/revision-a5000
-```
-
-Phase J requires A, B, C and D by default. `J_REQUIRE_PHASES='A B C'` permits an explicit
-partial pass; this does not mean D or the whole revision is complete. Preserve producer
-`RUN_P*`/`SEEDS` scope when checking. Judge generation/resource errors fail the job;
-resubmission reuses cached calls. `RUN_REVISION=0` selects legacy-only judging;
-`RUN_QWEN`, `RUN_LLAMA`, `RUN_LEGACY` select backend/input passes (default all enabled).
-
-## Paths and settings
-
-| Variable | Default / purpose |
-|---|---|
-| `RCG_ROOT` | Submission directory; repository root |
-| `RCG_RESULTS_ROOT` | `assets/results/revision-a5000` |
-| `RCG_PREFLIGHT_ROOT` | `assets/results/a5000-preflight` |
-| `RCG_JUDGE_ROOT` | `assets/results/a5000-judges` |
-| `RCG_LOG_ROOT` | `assets/logs/a5000`, with per-phase subdirectories |
-| `RCG_RECOVERY_STEPS` | 100 optimizer steps |
-| `JUDGE_MAX_INPUT_TOKENS` | 4096, guarded before GPU transfer |
-| `CR_EVAL_MAX` | 2000 validation rows for the 14B CR official only |
+| `RCG_RESULTS_ROOT` | `assets/results/revision-a100` |
+| `RCG_PREFLIGHT_ROOT` | `assets/results/a100-preflight` |
+| `RCG_JUDGE_ROOT` | `assets/results/a100-judges` |
+| `RCG_LOG_ROOT` | `assets/logs/a100` (per-phase directories) |
+| `JUDGE_MAX_INPUT_TOKENS` | 4096 |
+| `CR_EVAL_MAX` | 2000 validation rows for D's CR official |
 | `WANDB_MODE` | offline |
 
-Training uses `<root>/<dataset>/<stem>_official_<lr>[_seed<n>]`; sweeps are in
-`<root>/<dataset>/sweeps`. ICL uses `<root>/icl/<dataset>`. Judge roots are separate
-`qwen-revision`, `llama-legacy`, `llama-revision` directories. Frozen artifacts remain
-inputs. Agent tests use scratch directories; server experiments produce their own
-isolated output trees. The planning scenarios in BUDGET.md must be calibrated with server throughput.
+Use separate roots from A5000 runs and frozen inputs. Training leaf names and
+result/judge schemas are unchanged. Judge roots remain separate by backend and
+legacy/revision input set. Slurm logs go to `assets/logs/slurm`; create it before
+individual sbatch submissions (the launcher creates it for actual submission).
 
-## Review and planning budget (2026-09-11)
-
-See [BUDGET.md](BUDGET.md) for counts, explicit timing assumptions and calibration.
-The default queue is approximately 1,260–6,460 occupied hours in the planning
-scenarios; all supported optional work is 1,565–7,980 hours. These are unmeasured
-scenarios, not an A5000 performance claim.
-
-Slurm copies the submitted script to its spool directory. All wrappers locate
-`common.sh` through `RCG_ROOT` or `SLURM_SUBMIT_DIR`, so the complete tracked checkout
-must exist on the execution node at that path. `environment.yml` includes pytest
-for the infrastructure gate; provision it before submission.
-
-For J after all supported optional blocks, leave global RUN_P* unset and set:
+J checks A/B/C/D by default. Server-only completion command:
 
 ```bash
-RCG_A_RUN_P1=1 RCG_B_RUN_P2=1 RCG_C_RUN_P2=1 \
-  sbatch --partition=YOUR_A5000_PARTITION scripts/slurm/16_campaign_j.sbatch
+RCG_TARGET_GPU=a100_80gb "$RCG_PYTHON" tools/campaign_status.py A \
+  --results-root assets/results/revision-a100
 ```
 
-The completion checker accepts `RCG_<A|B|C|D>_<RUN_P0|RUN_P1|RUN_P2|SEEDS>`
-overrides. These select expected coverage only: launch producers with their own
-RUN_P*/SEEDS flags. Preserve these settings when resubmitting J. A global RUN_P2=1
-would enable D's explicitly unsupported ordinary LoRA request.
+For optional producer scopes, set `RCG_A_RUN_P1=1 RCG_B_RUN_P2=1 RCG_C_RUN_P2=1`
+on J's individual submission; producer jobs themselves use their own `RUN_P*`.
+Do not apply global `RUN_P2=1` to D. `J_REQUIRE_PHASES='A B C'` requests a partial
+judge pass and cannot claim D complete. `RUN_REVISION=0` selects legacy-only judging;
+`RUN_QWEN`, `RUN_LLAMA`, `RUN_LEGACY` control the passes (default all on).
 
-## Transfer preparation
-
-Git carries code, environment.yml, scripts, and paper/generated/cr_judge_subset.json.
-Data and model files require a separate server transfer; do not add assets or ignored
-AI plans to git. Before qualification, preserve these relative paths:
-
-- `assets/data/Trans_Review/{train,val,test}.jsonl` and
-  `assets/data/Code_Review/msg-{train,valid,test}.jsonl` (about 4.18 GB decimal total).
-- Local judge weights/tokenizers at `assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct`
-  and `assets/models/llm-judge/Llama-3.1-8B-Instruct` (latter requires authorized access).
-- Legacy artifacts at their original `assets/models/...` paths for the mock gate,
-  plus `assets/models/llm-as-judge/table-results/inputs/` for legacy Llama judging.
-- Base-model, tokenizer, evaluate/BERTScore and NLTK caches, or provision them on
-  the server before starting timed jobs. Base models use Hub IDs; copying legacy
-  adapters alone does not supply their base weights. `HF_HOME` defaults to
-  `assets/cache/huggingface`; keep symlink targets when transferring caches.
-
-Create `assets/logs/slurm` before sbatch (Slurm opens output before shell startup).
-Use persistent storage for revision roots, recovery checkpoints, judge caches and
-logs, with room for best/latest checkpoints for every retained run; the input-only
-transfer size is not the final storage requirement. Keep legacy inputs read-only.
-A failed conditional 14B pilot stops 00–07 before later pilots. To qualify independent
-ICL/judge work use `ONLY='probe_icl_|probe_qwen-judge|probe_llama-judge'` on the same
-infra file; a filtered job exits 75 deliberately. Submit only campaigns whose own
-admission reports pass; unavailable D requires explicitly partial J prerequisites.
+[BUDGET.md](BUDGET.md) preserves historical A5000 timing assumptions. Those numbers
+are not an A100 estimate. Calibrate elapsed training, generation, metrics and
+checkpoint times on the server before estimating the new campaign duration.

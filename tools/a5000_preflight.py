@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify each A5000 training configuration with a persisted interruption pilot.
+"""Qualify conservative training settings with a persisted interruption pilot.
 
 All paths are user-selected scratch. A passing report is evidence for this bounded
 pilot, not a guarantee for arbitrary lengths/configs or different software revisions.
@@ -19,6 +19,16 @@ from src.training.recovery import (atomic_json, file_digest, fingerprint, instal
                                    latest_recovery_checkpoint, stop_requested, INCOMPLETE)
 
 
+def hardware_policy():
+    """Keep historical standalone defaults; Slurm explicitly selects A100 80GB."""
+    target = os.environ.get("RCG_TARGET_GPU", "a5000")
+    policies = {"a5000": ("A5000", 23, 25, 22),
+                "a100_80gb": ("A100", 79, 81, 76)}
+    if target not in policies:
+        raise ValueError(f"Unsupported RCG_TARGET_GPU: {target}")
+    return policies[target]
+
+
 def environment_identity():
     packages = {}
     for name in ("torch", "transformers", "peft", "bitsandbytes", "accelerate", "datasets",
@@ -36,7 +46,8 @@ def environment_identity():
                                           "--format=csv,noheader"], text=True, stderr=subprocess.DEVNULL).splitlines()))
     except (OSError, subprocess.CalledProcessError):
         driver = None
-    return {"packages": packages, "python": sys.version, "cuda_build": cuda_build, "driver": driver}
+    return {"packages": packages, "python": sys.version, "cuda_build": cuda_build, "driver": driver,
+            "target_gpu": os.environ.get("RCG_TARGET_GPU", "a5000")}
 
 
 def runtime_digest():
@@ -55,12 +66,15 @@ def lifecycle_peaks(resources, run_dir):
 
 def check_report(report, digest, expected=None):
     if report.get("runtime_digest") != digest or report.get("admitted") is not True:
-        raise ValueError("Missing or stale A5000 admission; rerun the combined infrastructure job")
+        raise ValueError("Missing or stale admission; rerun the infrastructure smoke job")
     peak = report.get("peak_reserved_gib", float("inf"))
     allocated = report.get("peak_allocated_gib", float("inf"))
-    if ("A5000" not in report.get("hardware", "") or not math.isfinite(peak)
-            or not 0 < allocated <= peak <= 22):
-        raise ValueError("Pilot did not meet the A5000 22 GiB reserved-memory gate")
+    name, minimum, maximum, limit = hardware_policy()
+    capacity = report.get("total_memory_gib", 24 if name == "A5000" else 0)
+    if (name not in report.get("hardware", "") or "MIG" in report.get("hardware", "").upper()
+            or not minimum <= capacity <= maximum
+            or not math.isfinite(peak) or not 0 < allocated <= peak <= limit):
+        raise ValueError(f"Pilot did not meet the {name} {limit} GiB reserved-memory gate")
     if expected and any(report.get(key) != value for key, value in expected.items()):
         raise ValueError("Admission belongs to a different workload")
     return report
@@ -69,14 +83,18 @@ def check_report(report, digest, expected=None):
 def require_gpu():
     import torch
     if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
-        raise RuntimeError("Preflight requires exactly one allocated A5000 GPU")
+        raise RuntimeError("Preflight requires exactly one allocated GPU")
     info = torch.cuda.get_device_properties(0)
-    if "A5000" not in info.name or not 23 <= info.total_memory / 2**30 <= 25:
-        raise RuntimeError(f"Expected A5000 24 GB; got {info.name}, {info.total_memory / 2**30:.2f} GiB")
+    name, minimum, maximum, _ = hardware_policy()
+    if (name not in info.name or "MIG" in info.name.upper()
+            or not minimum <= info.total_memory / 2**30 <= maximum):
+        raise RuntimeError(f"Expected {name} ({minimum}–{maximum} GiB); got {info.name}, "
+                           f"{info.total_memory / 2**30:.2f} GiB")
     return info.name
 
 
 def training_probe(args, digest, hardware):
+    import torch
     from src.training.registry import get_spec, resolve_run
     root = Path(args.out_root) / "pilots" / digest[:12] / args.dataset / args.model / args.method
     _, _, spec = get_spec(args.model, args.method)
@@ -111,7 +129,8 @@ def training_probe(args, digest, hardware):
               "method": args.method, "dataset": args.dataset, "peak_reserved_gib": peak,
               "peak_allocated_gib": peaks["peak_vram_allocated_gb"],
               "environment": environment_identity(),
-              "admitted": peak <= 22, "result": str(result_path),
+              "total_memory_gib": torch.cuda.get_device_properties(0).total_memory / 2**30,
+              "admitted": peak <= hardware_policy()[3], "result": str(result_path),
               "note": "Two-step lifecycle and full-length generation pilot; target corpus campaign still required"}
     return report
 
