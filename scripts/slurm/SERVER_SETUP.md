@@ -1,5 +1,9 @@
 # A100 80GB server setup
 
+**For SUTD Mega, use [the PBS setup guide](../pbs/SERVER_SETUP.md).** Its access
+path is Ubuntu → macOS `bridge` → `sutd_mega`, with PBS `qsub`/`qstat`.
+This page preserves setup/submission instructions for other Slurm clusters.
+
 Run these commands **on the server only**, from the repository root. Local RTX 3090
 work is limited to Bash/static checks for this task: no Python, pytest, imports,
 model loads, environment installation or GPU workloads locally.

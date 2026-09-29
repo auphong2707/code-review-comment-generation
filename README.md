@@ -3,8 +3,10 @@
 This repository contains implementations for training various deep learning models for automated code review generation.
 
 For the revision campaign on one A100 80GB, follow the
-[server environment setup](scripts/slurm/SERVER_SETUP.md) and
-[six-job Slurm workflow](scripts/slurm/README.md). The first job is the smoke and
+[SUTD server setup](scripts/pbs/SERVER_SETUP.md) and
+[six-job PBS workflow](scripts/pbs/README.md). Connect from Ubuntu through the
+macOS `bridge` to `sutd_mega`; use `qsub` and `qstat`/`myjob` on that server.
+The first job is the smoke and
 recovery gate; the remaining jobs run only after their dependencies succeed.
 
 ## Project Structure

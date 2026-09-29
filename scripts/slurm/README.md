@@ -1,5 +1,10 @@
 # A100 80GB revision campaigns
 
+**SUTD Mega uses PBS Pro.** For Ubuntu → macOS `bridge` → `sutd_mega`, use
+the [PBS workflow](../pbs/README.md) and [setup guide](../pbs/SERVER_SETUP.md).
+The Slurm submission/monitoring commands below apply only to Slurm clusters.
+PBS reuses these campaign bodies as Bash scripts; scientific scope is shared.
+
 Start with [SERVER_SETUP.md](SERVER_SETUP.md) to create the server environment and
 transfer inputs. The six existing sbatch files are retained as a small serial queue:
 

@@ -1,0 +1,9 @@
+#!/bin/bash
+#PBS -N rcg_14
+#PBS -q a100q
+#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
+#PBS -l walltime=72:00:00
+#PBS -j oe
+#PBS -V
+# Submit from the server repository root. PBS spools this file separately.
+exec bash "${RCG_ROOT:-${PBS_O_WORKDIR:?Submit with qsub from the repository root}}/scripts/pbs/run_phase.sh" 14_campaign_c
