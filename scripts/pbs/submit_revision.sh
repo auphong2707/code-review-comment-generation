@@ -14,8 +14,7 @@ bash scripts/slurm/submit_revision.sh --preview >/dev/null
 for key in RCG_PARTITION RCG_ACCOUNT RCG_QOS RCG_GRES; do
     [[ -z "${!key:-}" ]] || { echo "Unset Slurm-only $key; use RCG_PBS_* settings" >&2; exit 2; }
 done
-options=(-V -q "${RCG_PBS_QUEUE:-a100q}")
-[[ -z "${RCG_PBS_PROJECT:-}" ]] || options+=(-P "$RCG_PBS_PROJECT")
+options=(-V -q "${RCG_PBS_QUEUE:-a100q}" -P "${RCG_PBS_PROJECT:-20260203}")
 if [[ -n "${RCG_PBS_WALLTIME:-}" ]]; then
     [[ "$RCG_PBS_WALLTIME" =~ ^([0-9]+):([0-5][0-9]):([0-5][0-9])$ ]] || {
         echo "RCG_PBS_WALLTIME must be HH:MM:SS" >&2; exit 2;

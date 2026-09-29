@@ -36,8 +36,7 @@ only copy of recovery state across jobs. Check actual quotas with `myquota`.
 On the login node, request an interactive allocation for environment validation:
 
 ```bash
-qsub -I -q a100q -l select=1:ncpus=8:ngpus=1:mem=64gb -l walltime=02:00:00
-# Add -P YOUR_GROUP_PROJECT only when using a group allocation.
+qsub -I -P 20260203 -q a100q -l select=1:ncpus=8:ngpus=1:mem=64gb -l walltime=02:00:00
 # Inside the allocated compute node:
 cd /scratch/"$USER"/code-review-comment-generation
 nvidia-smi
@@ -160,7 +159,7 @@ On the SUTD login node, set the PBS queue/project, preview, then submit yourself
 
 ```bash
 export RCG_PBS_QUEUE=a100q
-# export RCG_PBS_PROJECT=YOUR_GROUP_PROJECT
+export RCG_PBS_PROJECT=20260203
 bash scripts/pbs/submit_revision.sh --preview
 bash scripts/pbs/submit_revision.sh --submit
 qstat -u "$USER"

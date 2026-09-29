@@ -50,13 +50,16 @@ in SERVER_SETUP.md:
 
 ```bash
 export RCG_PBS_QUEUE=a100q
-# export RCG_PBS_PROJECT=YOUR_GROUP_PROJECT  # omit for a personal account
+export RCG_PBS_PROJECT=20260203
 # export RCG_PBS_WALLTIME=72:00:00          # default in each PBS entry
 bash scripts/pbs/submit_revision.sh --preview
 bash scripts/pbs/submit_revision.sh --submit
 ```
 
 The default is preview. Only `--submit` contacts PBS; save the six printed IDs.
+The launcher and all six PBS entries default to project `20260203`. An explicit
+`RCG_PBS_PROJECT` overrides the launcher's default; direct `qsub` submissions use
+the entry's `#PBS -P 20260203` unless overridden with `qsub -P`.
 The launcher rejects partial/scope overrides and Slurm site settings. Optional
 scope uses individual `qsub` submissions and matching completion-check settings,
 as described in the [shared research scope](../slurm/README.md#research-scope-and-conservative-settings).
