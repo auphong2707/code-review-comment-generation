@@ -2,7 +2,8 @@
 
 The connection path is **Ubuntu → macOS `bridge` → `sutd_mega`**. The final
 host is the SUTD PBS login node; Python/GPU qualification runs inside a PBS
-allocation. The bridge is for access and optional transfer staging.
+allocation. The bridge relays the SSH connection; transferred files go directly
+to `sutd_mega`.
 
 ## Connect from Ubuntu
 
@@ -129,26 +130,40 @@ predictions, judge caches and logs, beyond the input transfer size. Do not place
 recovery roots in node-local temporary storage. A hard kill may replay work since
 the last committed checkpoint; the same output roots are needed to resume.
 
-For example, stage datasets through the bridge. Replace `MAC_STAGE` with an
-absolute directory on the Mac and `SUTD_USER` with the server account. The first
-command runs on Ubuntu; the second runs on the Mac. Use `--dry-run` to inspect
-each transfer first; no `--delete` is needed. `-a` preserves cache symlinks, so also
-transfer their targets when staging model caches. Mac's bundled rsync may lack
-`--info=progress2`; these examples use portable `--progress`.
+Run rsync on **Ubuntu**, with `sutd_mega` as the destination and `bridge` as the
+SSH jump host. Files are stored on the server; no intermediate copy is made on
+the Mac. Replace `SUTD_USER` with the server account (the PBS project ID
+`20260203` is not a username).
+
+For this ProxyJump command, define the target alias in Ubuntu's `~/.ssh/config`
+using the real server account and authentication settings. Keep the existing
+`bridge` alias. The target alias on the Mac alone is insufficient:
+
+```sshconfig
+Host sutd_mega
+    HostName login1.gpucluster.sutd.edu.sg
+    User SUTD_USER
+```
+
+Ubuntu must be able to authenticate to the server through the bridge. rsync runs
+on Ubuntu and `sutd_mega`; the Mac only forwards SSH traffic. After the target
+directory exists on `sutd_mega`, preview and then transfer from the local repo root:
 
 ```bash
-# Ubuntu (after creating the staging directory on bridge):
-rsync -a --progress assets/data/ bridge:MAC_STAGE/assets/data/
-# macOS bridge (after creating the target assets/data directory on sutd_mega):
-rsync -a --progress MAC_STAGE/assets/data/ \
+rsync -a --progress --dry-run -e 'ssh -J bridge' assets/data/ \
+    sutd_mega:/scratch/SUTD_USER/code-review-comment-generation/assets/data/
+rsync -a --progress -e 'ssh -J bridge' assets/data/ \
     sutd_mega:/scratch/SUTD_USER/code-review-comment-generation/assets/data/
 ```
 
 Repeat for the required judge models, frozen JSONs/inputs and caches listed above,
-preserving their repository-relative paths. The September cleanup left about
+preserving their repository-relative paths. `-a` preserves cache symlinks; include
+their targets and ensure the links resolve on the server. No `--delete` is needed.
+The September cleanup left about
 54 GiB of local assets, not the earlier 284+ GB inventory; this is input footprint,
 not the free space required for new recovery checkpoints. Fetch new results back
-via the reverse hops into a separate local staging directory before inspecting
+with the same `-e 'ssh -J bridge'` transport, using `sutd_mega:/scratch/...` as the
+source and a separate local staging directory as the destination before inspecting
 them; preserve frozen local results. The archived quickstart under `assets/`
 predates this corrected bridge/revision workflow; use this document for launch.
 
