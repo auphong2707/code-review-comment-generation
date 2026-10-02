@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+[[ $# == 0 || ( $# == 1 && "$1" == --body ) ]] || { echo "Usage: $0 [--body]" >&2; exit 2; }
 export RCG_ROOT="${RCG_ROOT:-${PBS_O_WORKDIR:?Submit from the repository root}}"
 cd "$RCG_ROOT"
 [[ "${RCG_PBS_CHUNK:-}" =~ ^[1-9][0-9]*$ ]] || { echo "Set RCG_PBS_CHUNK to a listed chunk ID" >&2; exit 2; }
@@ -22,4 +23,10 @@ case "$RCG_CHUNK_KIND" in
     step) export RCG_PBS_STEP="$RCG_CHUNK_ITEM"; phase="$RCG_CHUNK_PHASE" ;;
     *) phase=split_work ;;
 esac
+if [[ "${1:-}" == --body ]]; then
+    # Internal bundle execution shares its parent's allocation timer.
+    script="scripts/slurm/$phase.sbatch"
+    [[ "$phase" != split_work ]] || script=scripts/pbs/split_work.sh
+    exec bash "$script"
+fi
 exec bash scripts/pbs/run_phase.sh "$phase"

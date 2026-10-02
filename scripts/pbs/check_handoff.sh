@@ -11,7 +11,7 @@ for script in scripts/pbs/*.sh scripts/pbs/*.pbs scripts/slurm/*.sh scripts/slur
 done
 for script in scripts/pbs/*.pbs; do
     phase=$(basename "$script" .pbs)
-    [[ "$phase" != chunk ]] || continue
+    [[ "$phase" != chunk && "$phase" != bundle ]] || continue
     # PBS spools the entry outside the checkout; only PBS_O_WORKDIR locates helpers.
     cp "$script" "$scratch/spooled.pbs"
     (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" DRY=1 bash spooled.pbs) > "$scratch/pbs.txt"
@@ -19,9 +19,9 @@ for script in scripts/pbs/*.pbs; do
     diff -u "$scratch/slurm.txt" "$scratch/pbs.txt"
 done
 bash scripts/pbs/submit_revision.sh --preview > "$scratch/preview"
-[[ $(wc -l < "$scratch/preview") -eq 267 ]]
-[[ $(rg -c 'depend=afterok:' "$scratch/preview") -eq 266 ]]
-[[ $(rg -c 'walltime=100:00:00' "$scratch/preview") -eq 267 ]]
+[[ $(wc -l < "$scratch/preview") -eq 8 ]]
+[[ $(rg -c 'depend=afterok:' "$scratch/preview") -eq 7 ]]
+[[ $(rg -c 'walltime=100:00:00' "$scratch/preview") -eq 8 ]]
 
 # Every producer command must appear exactly once across the split inventory,
 # including all LR candidates before their dependent official runs.
@@ -31,12 +31,15 @@ for phase in 12_campaign_a 13_campaign_b 14_campaign_c 15_campaign_d; do
     DRY=1 bash "scripts/slurm/$phase.sbatch" | rg '^STEP ' >> "$scratch/expected"
 done
 : > "$scratch/actual"
-while IFS=$'\t' read -r id kind phase item; do
-    [[ "$kind" == step ]] || continue
-    RCG_PBS_CHUNK="$id" DRY=1 bash scripts/pbs/chunk.pbs | rg '^STEP ' >> "$scratch/actual"
-done < "$scratch/chunks"
-diff -u "$scratch/expected" "$scratch/actual"
-[[ $(wc -l < "$scratch/actual") -eq 144 ]]
+for id in {1..8}; do
+    RCG_PBS_BUNDLE="$id" DRY=1 bash scripts/pbs/bundle.pbs >> "$scratch/actual"
+done
+rg '^STEP [abcd]_' "$scratch/actual" > "$scratch/producers"
+diff -u "$scratch/expected" "$scratch/producers"
+[[ $(wc -l < "$scratch/producers") -eq 144 ]]
+awk '/^PBS chunk / {print $3}' "$scratch/actual" | tr -d ':' > "$scratch/actual-ids"
+cut -f1 "$scratch/chunks" > "$scratch/expected-ids"
+diff -u "$scratch/expected-ids" "$scratch/actual-ids"
 rc=0
 RCG_PBS_STEP=nonexistent DRY=1 bash scripts/slurm/12_campaign_a.sbatch > "$scratch/empty" 2>&1 || rc=$?
 [[ "$rc" -eq 2 ]]
@@ -48,6 +51,10 @@ cp scripts/pbs/chunk.pbs "$scratch/spooled.pbs"
 (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PBS_CHUNK=2 DRY=1 bash spooled.pbs) > "$scratch/spooled-chunk"
 [[ $(rg -c '^STEP ' "$scratch/spooled-chunk") -eq 1 ]]
 rg -q '^STEP a_p0_codet5_ia3_seed42:' "$scratch/spooled-chunk"
+cp scripts/pbs/bundle.pbs "$scratch/spooled.pbs"
+(cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PBS_BUNDLE=5 DRY=1 bash spooled.pbs) > "$scratch/spooled-bundle"
+[[ $(rg -c '^STEP d_' "$scratch/spooled-bundle") -eq 8 ]]
+rg -q '^STEP gate_D:' "$scratch/spooled-bundle"
 
 mkdir "$scratch/bin"
 export PBS_TEST_DIR="$scratch"
@@ -66,12 +73,12 @@ chmod +x "$scratch/bin/qsub"
 export PATH="$scratch/bin:$PATH"
 bash scripts/pbs/submit_revision.sh --submit > "$scratch/ids"
 [[ $(wc -l < "$scratch/calls") -eq 8 ]]
-rg -q 'depend=afterok:1.aimc-hn1 scripts/pbs/chunk.pbs' "$scratch/calls"
-rg -q 'depend=afterok:7.aimc-hn1 scripts/pbs/chunk.pbs' "$scratch/calls"
+rg -q 'depend=afterok:1.aimc-hn1 scripts/pbs/bundle.pbs' "$scratch/calls"
+rg -q 'depend=afterok:7.aimc-hn1 scripts/pbs/bundle.pbs' "$scratch/calls"
 rm "$scratch/count" "$scratch/calls"
-bash scripts/pbs/submit_revision.sh --submit --start 9 --count 2 --afterok 8.aimc-hn1 > "$scratch/next"
+bash scripts/pbs/submit_revision.sh --submit --start 7 --count 2 --afterok 6.aimc-hn1 > "$scratch/next"
 [[ $(wc -l < "$scratch/calls") -eq 2 ]]
-rg -q 'RCG_PBS_CHUNK=9 -W depend=afterok:8.aimc-hn1' "$scratch/calls"
+rg -q 'RCG_PBS_BUNDLE=7 -W depend=afterok:6.aimc-hn1' "$scratch/calls"
 rm "$scratch/count" "$scratch/calls"
 rc=0
 FAIL_AT=3 bash scripts/pbs/submit_revision.sh --submit > "$scratch/failure" || rc=$?
@@ -111,6 +118,7 @@ BODY
 cat > "$scratch/bin/qstat" <<'MOCK'
 #!/usr/bin/env bash
 printf '    Resource_List.walltime = %s\n' "${FAKE_WALLTIME:-00:10:01}"
+printf 'query\n' >> "$PBS_TEST_DIR/qstat-calls"
 MOCK
 chmod +x "$scratch/bin/qstat"
 rc=0
@@ -118,8 +126,22 @@ PBS_JOBID=42.aimc-hn1 RCG_ROOT="$scratch/repo" RCG_PYTHON=/bin/true \
     RCG_LOG_ROOT="$scratch/logs" WANDB_DIR="$scratch/wandb" \
     bash scripts/pbs/run_phase.sh 12_campaign_a > "$scratch/stop-log" 2>&1 || rc=$?
 [[ "$rc" -eq 75 && -f "$scratch/committed" && ! -e "$scratch/incorrectly-completed" ]]
+# The bundle must have only one allocation timer, and its stop signal must reach
+# the nested worker without killing the child's log pipe or starting another task.
+mkdir -p "$scratch/repo/scripts/pbs"
+cp scripts/pbs/run_bundle.sh scripts/pbs/run_chunk.sh "$scratch/repo/scripts/pbs/"
+cat > "$scratch/repo/scripts/pbs/chunks.sh" <<'INVENTORY'
+printf '1\tstep\t12_campaign_a\tfake_worker\n2\tstep\t12_campaign_a\tnever_started\n'
+INVENTORY
+rm "$scratch/committed" "$scratch/qstat-calls"
+rc=0
+PBS_JOBID=42.aimc-hn1 RCG_PBS_BUNDLE=2 RCG_ROOT="$scratch/repo" RCG_PYTHON=/bin/true \
+    RCG_LOG_ROOT="$scratch/logs" WANDB_DIR="$scratch/wandb" \
+    bash scripts/pbs/run_phase.sh bundle > "$scratch/stop-log" 2>&1 || rc=$?
+[[ "$rc" -eq 75 && -f "$scratch/committed" && ! -e "$scratch/incorrectly-completed" ]]
+[[ $(wc -l < "$scratch/qstat-calls") -eq 1 ]]
 rc=0
 PBS_JOBID=42.aimc-hn1 FAKE_WALLTIME=invalid \
     bash scripts/pbs/run_phase.sh 12_campaign_a > "$scratch/invalid-time" 2>&1 || rc=$?
 [[ "$rc" -eq 2 ]]
-printf 'PASS: syntax, legacy parity, 144 split producer commands, bounded batches, dependencies/failures, scope guards and timed recovery\n'
+printf 'PASS: eight jobs, 267 internal tasks, 144 producer commands, spooled dispatch, dependencies/failures, scope guards and nested timed recovery\n'

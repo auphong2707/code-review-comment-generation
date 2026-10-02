@@ -198,7 +198,7 @@ predates this corrected bridge/revision workflow; use this document for launch.
 
 ## Submit and inspect
 
-See [README.md](README.md) for the split-job batches and recovery instructions.
+See [README.md](README.md) for the eight-job chain and recovery instructions.
 On the SUTD login node, set the PBS queue/project, preview, then submit yourself:
 
 ```bash
@@ -210,9 +210,9 @@ qstat -u "$USER"
 myjob
 ```
 
-`--preview` uses Bash only and submits nothing. `--submit` submits at most eight
-chunks, prints each job ID and the continuation command for the next batch.
-Save those IDs; wait for batch success and available queued quota before continuing.
+`--preview` uses Bash only and submits nothing. `--submit` submits exactly eight
+serial jobs and prints each full job ID. Save those IDs for monitoring/recovery.
+If other queued work consumes quota, use `--count` and later `--start/--afterok`.
 The first job must finish successfully before any training campaign
 starts. Review its logs and admission JSONs; a two-step pilot checks bounded
 execution, memory, metrics and recovery, not convergence or arbitrary corpus inputs.
