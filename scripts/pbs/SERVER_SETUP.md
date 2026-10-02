@@ -29,17 +29,20 @@ User and usable target authentication. The nested SSH path does not require that
 
 The supplied January 2026 guide lists shared home `/home/users/$USER` (100 GB)
 and shared scratch `/scratch/$USER` (1 TB, files unused for 180 days may be purged).
-Place the active checkout and assets under
-`/scratch/$USER/code-review-comment-generation`; back up needed results before
-the retention window. `/raid` is node-local (60-day purge), unsuitable for the
-only copy of recovery state across jobs. Check actual quotas with `myquota`.
+The active checkout is
+`/home/users/congthanh_le/JSS/code-review-comment-generation` (home, 100 GB quota,
+not purged). About 54 GiB of input assets plus new recovery checkpoints can exceed
+that quota; if `myquota` runs short, move `assets/models` to `/scratch/$USER` and
+symlink it back (scratch is purged after 180 unused days; back results up).
+`/raid` is node-local (60-day purge), unsuitable for the only copy of recovery
+state across jobs. Check actual quotas with `myquota`.
 
 On the login node, request an interactive allocation for environment validation:
 
 ```bash
 qsub -I -P 20260203 -q a100q -l select=1:ncpus=8:ngpus=1:mem=64gb -l walltime=02:00:00
 # Inside the allocated compute node:
-cd /scratch/"$USER"/code-review-comment-generation
+cd /home/users/congthanh_le/JSS/code-review-comment-generation
 nvidia-smi
 ```
 
@@ -56,12 +59,36 @@ compute nodes. Run `nvidia-smi` in a GPU allocation to check the driver/device.
 
 ## Create the environment
 
+Run `bash assets/rsync_to_server.txt` on Ubuntu first (see the transfer section
+below); the checkout and `SOURCE_COMMIT` must exist on the server before this step.
+
 The historical `environment.yml` is a machine-specific Python 3.13/CUDA 12.9
 export. Use a new environment for this campaign. The candidate stack below is
 pinned at the direct-dependency level; the smoke job must validate it on the server.
 It uses SDPA and does not require FlashAttention or DeepSpeed for the retained jobs.
 
+The server has no conda by default. Full Anaconda is unnecessary; install
+Miniforge (conda-forge only) once on the login node, in home, without admin rights.
+First check `module avail` for an existing conda/miniforge module and use it instead.
+
 ```bash
+cd $HOME
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash Miniforge3-Linux-x86_64.sh -b -p "$HOME/miniforge3"
+source "$HOME/miniforge3/etc/profile.d/conda.sh"
+conda --version
+```
+
+If the login node has no internet, download the installer on Ubuntu and copy it
+with `scp Miniforge3-Linux-x86_64.sh sutd_mega:` first. The environment and caches
+use the 100 GB home quota; after installing, run `conda clean -a -y` and
+`python -m pip cache purge`.
+
+Each later login: `source "$HOME/miniforge3/etc/profile.d/conda.sh"` before
+`conda activate rcg-a100`.
+
+```bash
+cd /home/users/congthanh_le/JSS/code-review-comment-generation
 conda create -n rcg-a100 python=3.12 pip -y
 conda activate rcg-a100
 python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
@@ -70,7 +97,7 @@ python -m pip check
 mkdir -p assets/logs/pbs
 python -m pip freeze > assets/logs/pbs/environment-a100.txt
 conda list --explicit > assets/logs/pbs/conda-a100.txt
-git rev-parse HEAD > assets/logs/pbs/source-a100.txt
+cat SOURCE_COMMIT > assets/logs/pbs/source-a100.txt  # rsync copies no .git
 ```
 
 The CUDA wheel command comes from [PyTorch's previous-version installation guide](https://pytorch.org/get-started/previous-versions/).
@@ -100,9 +127,10 @@ Hugging Face or uploads results.
 
 ## Transfer inputs and prepare caches
 
-Use the committed checkout and `paper/generated/cr_judge_subset.json` on the
-server (the existing Git remote/pull workflow). Transfers are user-run and follow
-both hops. Do not copy Ubuntu's `.venv`, macOS environments, `.env`, or ignored AI
+Create and update the server checkout (code, `paper/generated/cr_judge_subset.json`
+and local assets) by running `bash assets/rsync_to_server.txt` on Ubuntu. It creates
+the target directory, excludes `.git`, and writes `SOURCE_COMMIT` (`-dirty` marks
+uncommitted changes). Transfers are user-run. Do not copy Ubuntu's `.venv`, macOS environments, `.env`, or ignored AI
 documentation into the server checkout. Separately transfer:
 
 - `assets/data/Trans_Review/{train,val,test}.jsonl` and
@@ -132,8 +160,8 @@ the last committed checkpoint; the same output roots are needed to resume.
 
 Run rsync on **Ubuntu**, with `sutd_mega` as the destination and `bridge` as the
 SSH jump host. Files are stored on the server; no intermediate copy is made on
-the Mac. Replace `SUTD_USER` with the server account (the PBS project ID
-`20260203` is not a username).
+the Mac. The server account is `congthanh_le` (the PBS project ID `20260203` is not a
+username).
 
 For this ProxyJump command, define the target alias in Ubuntu's `~/.ssh/config`
 using the real server account and authentication settings. Keep the existing
@@ -142,7 +170,8 @@ using the real server account and authentication settings. Keep the existing
 ```sshconfig
 Host sutd_mega
     HostName login1.gpucluster.sutd.edu.sg
-    User SUTD_USER
+    User congthanh_le
+    ProxyJump bridge
 ```
 
 Ubuntu must be able to authenticate to the server through the bridge. rsync runs
@@ -151,9 +180,9 @@ directory exists on `sutd_mega`, preview and then transfer from the local repo r
 
 ```bash
 rsync -a --progress --dry-run -e 'ssh -J bridge' assets/data/ \
-    sutd_mega:/scratch/SUTD_USER/code-review-comment-generation/assets/data/
+    sutd_mega:/home/users/congthanh_le/JSS/code-review-comment-generation/assets/data/
 rsync -a --progress -e 'ssh -J bridge' assets/data/ \
-    sutd_mega:/scratch/SUTD_USER/code-review-comment-generation/assets/data/
+    sutd_mega:/home/users/congthanh_le/JSS/code-review-comment-generation/assets/data/
 ```
 
 Repeat for the required judge models, frozen JSONs/inputs and caches listed above,
@@ -162,7 +191,7 @@ their targets and ensure the links resolve on the server. No `--delete` is neede
 The September cleanup left about
 54 GiB of local assets, not the earlier 284+ GB inventory; this is input footprint,
 not the free space required for new recovery checkpoints. Fetch new results back
-with the same `-e 'ssh -J bridge'` transport, using `sutd_mega:/scratch/...` as the
+with the same `-e 'ssh -J bridge'` transport, using `sutd_mega:/home/users/congthanh_le/JSS/...` as the
 source and a separate local staging directory as the destination before inspecting
 them; preserve frozen local results. The archived quickstart under `assets/`
 predates this corrected bridge/revision workflow; use this document for launch.
