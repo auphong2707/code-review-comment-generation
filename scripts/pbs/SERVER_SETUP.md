@@ -53,7 +53,7 @@ model loads, environment installation or GPU workloads locally.
 Use Linux x86_64, one full A100 80GB per job (not a 40GB device or MIG slice),
 8 CPUs and 64GB host RAM. The guide specifies PBS queue `a100q`, but does not
 confirm A100 memory capacity; the runtime admission check must pass on the device.
-The scripts request 72 hours; use `RCG_PBS_WALLTIME` for the launcher if needed.
+The PBS scripts request 100 hours, the verified a100q maximum. The launcher rejects larger requests.
 The checkout, data, caches and outputs must be on persistent storage visible to
 compute nodes. Run `nvidia-smi` in a GPU allocation to check the driver/device.
 
@@ -198,7 +198,7 @@ predates this corrected bridge/revision workflow; use this document for launch.
 
 ## Submit and inspect
 
-See [README.md](README.md) for the six-job chain and recovery instructions.
+See [README.md](README.md) for the split-job batches and recovery instructions.
 On the SUTD login node, set the PBS queue/project, preview, then submit yourself:
 
 ```bash
@@ -210,8 +210,10 @@ qstat -u "$USER"
 myjob
 ```
 
-`--preview` uses Bash only and submits nothing. `--submit` prints each job ID;
-save those IDs. The first job must finish successfully before any training campaign
+`--preview` uses Bash only and submits nothing. `--submit` submits at most eight
+chunks, prints each job ID and the continuation command for the next batch.
+Save those IDs; wait for batch success and available queued quota before continuing.
+The first job must finish successfully before any training campaign
 starts. Review its logs and admission JSONs; a two-step pilot checks bounded
 execution, memory, metrics and recovery, not convergence or arbitrary corpus inputs.
 No A100 runtime or fit claim is made until those server measurements exist.

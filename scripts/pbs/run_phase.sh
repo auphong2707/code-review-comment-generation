@@ -3,12 +3,13 @@
 set -euo pipefail
 phase="${1:?Pass a campaign name}"
 case "$phase" in
-    00_07_infrastructure|12_campaign_a|13_campaign_b|14_campaign_c|15_campaign_d|16_campaign_j) ;;
+    00_07_infrastructure|12_campaign_a|13_campaign_b|14_campaign_c|15_campaign_d|16_campaign_j|split_work) ;;
     *) echo "Unknown campaign: $phase" >&2; exit 2 ;;
 esac
 export RCG_ROOT="${RCG_ROOT:-${PBS_O_WORKDIR:-$PWD}}"
 cd "$RCG_ROOT"
 script="scripts/slurm/$phase.sbatch"
+[[ "$phase" != split_work ]] || script=scripts/pbs/split_work.sh
 [[ -f "$script" ]] || { echo "Set RCG_ROOT to the server repository root" >&2; exit 2; }
 if [[ "${DRY:-0}" == 1 ]]; then
     exec bash "$script"

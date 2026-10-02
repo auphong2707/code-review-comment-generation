@@ -1,136 +1,150 @@
 # SUTD Mega revision campaigns (PBS Pro)
 
-Access: **local Ubuntu → macOS `bridge` → `sutd_mega` login node → PBS GPU job**.
-Follow [SERVER_SETUP.md](SERVER_SETUP.md) for the SSH hops, storage, inputs and
-environment. SUTD uses `qsub` and `qstat`/`myjob`; `squeue` is a Slurm command.
+Access: **local Ubuntu → macOS `bridge` → `sutd_mega` → PBS GPU allocation**.
+Follow [SERVER_SETUP.md](SERVER_SETUP.md) for the environment and inputs.
+Live `qstat -Qf a100q` on 2026-10-02 reports a **100-hour maximum**, a 24-hour
+default, and a per-user queued GPU resource limit of eight. The scripts explicitly
+request 100 hours; unlimited walltime is unavailable under that queue policy.
+Each job requests one A100, 8 CPUs and 64 GB host RAM. Runtime still requires a
+full A100 80 GB device; the queue name alone does not establish its VRAM capacity.
 
-The January 2026 user guide (`assets/Research_GPU_Cluster-User-Guide_v2.2.pdf`,
-sections “Queue Configuration”, “Job Submission”, “Resource: Storage”) documents
-`a100q`, `select=1:ncpus=8:ngpus=1:mem=64gb`-style requests, and PBS monitoring.
-The guide lists no queue walltime cap; these jobs retain a 72-hour request for
-bounded recovery. Confirm current policy and quota on the server. It does not
-establish that an allocated A100 has 80 GB; the runtime checks full-device capacity.
+## Smaller jobs
 
-## Six serial jobs
+The default launcher now schedules **267 serial chunks**, with `afterok`
+dependencies. This is the same research scope as the previous six campaigns:
 
-| Order | PBS entry | Default work |
+| Chunk IDs | Work | Size per compute job |
 |---|---|---|
-| 1 | `00_07_infrastructure.pbs` | Dependency/unit/mock checks; 35 training recovery pilots; 3 ICL and 2 judge memory pilots; bounded real ICL/judge integration |
-| 2 | `12_campaign_a.pbs` | 54 TransReview runs: 18 configurations × seeds 42, 1, 2 |
-| 3 | `13_campaign_b.pbs` | 8 DoRA runs and 8 matching LoRA controls |
-| 4 | `14_campaign_c.pbs` | 66 ICL v2 runs |
-| 5 | `15_campaign_d.pbs` | 14B QLoRA: 3-point sweep → official, both datasets |
-| 6 | `16_campaign_j.pbs` | Qwen revision judging; Llama legacy/revision judging |
+| 1 | Infrastructure, recovery/memory pilots and bounded inference integration | One qualification job |
+| 2–55, then gate 56 | A: 54 TransReview seed runs | One model/method/seed training run |
+| 57–72, then gate 73 | B: 16 LoRA/DoRA commands | One training run; five controls reuse A outputs |
+| 74–139, then gate 140 | C: 66 ICL configurations | One model/dataset/prompt configuration |
+| 141–148, then gate 149 | D: six 14B QLoRA sweeps and two officials | One sweep candidate or official run |
+| 150 | Check all producers, build judge inventory and check judge admission | Preparation gate |
+| 151–198, then summary 199 | Qwen revision judging | 48 groups, normally 2–3 artifacts each |
+| 200–217, then summary 218 | Llama legacy judging | 18 groups, three artifacts each |
+| 219–266, then summary 267 | Llama revision judging | 48 groups, normally 2–3 artifacts each |
 
-Each requests one GPU, 8 CPUs, 64 GB host RAM and 72 hours. The launcher submits
-one `afterok` chain: smoke → A → B → C → D → J. Failure or an incomplete smoke
-blocks downstream work. Work exceeding walltime needs another allocation.
+`chunks.sh` derives producer commands from the existing Bash campaign previews;
+it does not maintain a second list of scientific runs. All three D sweep results
+must exist before selecting the official LR. A chunk's success means only its
+own work finished; separate full-campaign gates check complete outputs and identities.
+The six original `.pbs` entries remain available for advanced whole-phase runs,
+now with 100-hour limits, but the default launcher uses `chunk.pbs`.
 
-PBS entries execute the existing `scripts/slurm/*.sbatch` files **as Bash scripts**;
-`#SBATCH` comments have no effect in this path. This keeps one scientific run list
-for previews, completion checks and both schedulers. No Slurm tools or fabricated
-`SLURM_JOB_ID` are needed. Keep the complete checkout fixed while jobs are queued.
+Judge groups partition whole artifacts, retaining every row, k=3, cache keys,
+scored filenames and the existing three output roots. Shard manifests/summaries
+have distinct suffixes. A final summary job verifies scored coverage and input
+identity, then writes the canonical `manifest.jsonl` and `summary.csv` for that
+pass. Judge groups and all other jobs remain serial to avoid shared-cache writes.
+Do not run the old campaign and new chunks against the same roots concurrently.
 
-## Preview and submit
+Splitting reduces work per allocation; it cannot guarantee that any individual
+training run or judge group fits 100 hours. Training checkpoints, ICL row journals
+and judge caches retain the existing recovery behavior. No automatic resubmission
+or job cancellation occurs.
 
-On local Ubuntu, Bash checks only; no Python, installation, GPU work or submission:
+## Preview and submit in batches
 
-```bash
-for script in scripts/pbs/*.sh scripts/pbs/*.pbs scripts/slurm/*.sh scripts/slurm/*.sbatch; do
-    bash -n "$script" || break
-done
-DRY=1 RCG_JSON=0 RCG_PYTHON=/bin/false RCG_ROOT="$PWD" \
-    bash scripts/pbs/12_campaign_a.pbs
-bash scripts/pbs/submit_revision.sh --preview
-bash scripts/pbs/check_handoff.sh  # local fake-scheduler/parity/recovery gate
-```
-
-On `sutd_mega`, from the prepared repository root, after setting the environment
-in SERVER_SETUP.md:
+From the prepared repository on `sutd_mega`, after cancelling any obsolete queued
+chain and confirming no previous chain is writing the same roots:
 
 ```bash
 export RCG_PBS_QUEUE=a100q
 export RCG_PBS_PROJECT=20260203
-# export RCG_PBS_WALLTIME=72:00:00          # default in each PBS entry
-bash scripts/pbs/submit_revision.sh --preview
-bash scripts/pbs/submit_revision.sh --submit
+export RCG_PBS_WALLTIME=100:00:00
+bash scripts/pbs/chunks.sh                         # numbered work inventory
+bash scripts/pbs/submit_revision.sh --preview      # all 267 commands, no submission
+bash scripts/pbs/submit_revision.sh --submit       # first eight chunks only
 ```
 
-The default is preview. Only `--submit` contacts PBS; save the six printed IDs.
-The launcher and all six PBS entries default to project `20260203`. An explicit
-`RCG_PBS_PROJECT` overrides the launcher's default; direct `qsub` submissions use
-the entry's `#PBS -P 20260203` unless overridden with `qsub -P`.
-The launcher rejects partial/scope overrides and Slurm site settings. Optional
-scope uses individual `qsub` submissions and matching completion-check settings,
-as described in the [shared research scope](../slurm/README.md#research-scope-and-conservative-settings).
-For example, on the server: `qsub scripts/pbs/00_07_infrastructure.pbs` runs only smoke.
-The `#PBS -V` directive exports the prepared server environment to each job.
+The launcher prints the accepted job IDs and the exact continuation command:
 
-## Monitor (replacement for squeue)
+```bash
+# Example only: replace LAST_JOB_ID with the last accepted ID from your batch.
+bash scripts/pbs/submit_revision.sh --submit --start 9 --afterok LAST_JOB_ID
+```
+
+Wait for the previous batch to succeed and queued capacity to become available,
+then run that continuation command. Keep the full PBS ID including server suffix.
+Use `--count 1` through `--count 8` to reduce a batch if other jobs consume quota.
+The launcher does not count other jobs or reserve queue capacity; a rejected qsub
+stops immediately and reports the chunk where submission stopped. Preserve its
+printed IDs and inspect `qstat` before continuing; never blindly repeat a batch.
+PBS must still recognize a supplied dependency ID. If it has expired from server
+history, use the single-chunk recovery procedure below after inspecting completion.
+
+`--preview --start N --count 8` shows one batch. Noninitial batch submissions require
+`--afterok`; dependencies also chain every job within a batch. Walltime overrides
+must exceed ten minutes and cannot exceed 100 hours. Scope-changing environment
+variables such as `ONLY`, `SKIP` and `RUN_P*` are rejected by the default launcher.
+Keep source, inputs, output roots and environment fixed for the entire campaign;
+chunk IDs depend on this source's canonical run inventory.
+
+Local verification is Bash-only (no local Python or GPU work):
+
+```bash
+bash scripts/pbs/check_handoff.sh
+```
+
+This checks exact producer command coverage, spooled entries, batch bounds,
+dependencies, submission failures and timed recovery. The server qualification
+job runs pytest, including mock judge partition and final-summary coverage tests.
+
+## Monitor
 
 Run on the SUTD login node:
 
 ```bash
-myjob
 qstat -u "$USER"
-qstat -f JOB_ID                  # full ID, e.g. 123456.aimc-hn1
+qstat -f JOB_ID
+qstat -Qf a100q
 myhistory
-pbsnodes -aSj
-myquota
-myusage
 ```
 
-From Ubuntu, use the bridge's SSH configuration for the second hop:
+From Ubuntu, connect through the bridge's server credentials:
 
 ```bash
 ssh -t bridge 'ssh -t sutd_mega'
-# Now on sutd_mega: qstat -u "$USER"
 ```
 
-PBS merges stdout/stderr into its default `rcg_<phase>.o<job-number>` output in
-the submission directory. PBS may deliver that file only at job end. Live step
-logs are on shared storage under `assets/logs/a100/<phase>/`; for example:
+PBS merges stdout/stderr into `rcg_c<ID>.o<job-number>` in the submission directory;
+that file may arrive only at job end. Live producer logs remain under
+`assets/logs/a100/<phase>/`. Judge and gate logs use
+`assets/logs/a100/chunk_<ID>/`. For example:
 
 ```bash
 tail -f assets/logs/a100/00_07/infra_pytest.log
 ```
 
-`qstat -f` reports output paths, requested walltime and dependency state. Review
-smoke logs/admission reports before drawing conclusions about GPU fit or runtime.
+## Stop and resume
 
-## Stop, resume and dependencies
+`run_phase.sh` reads the allocation's actual walltime and sends USR1 ten minutes
+before the deadline. The campaign forwards it to the worker and waits for recovery
+state to be committed. Timeout/incomplete work exits nonzero and cannot release
+successor jobs. A save longer than the warning window can still be killed.
 
-`run_phase.sh` queries the allocation's `Resource_List.walltime` using `qstat -f`,
-then uses GNU `timeout` to send USR1 ten minutes before that walltime. The existing
-campaign shell forwards USR1 to its active worker and waits for committed progress.
-Timeout/incomplete execution exits nonzero, so it cannot satisfy `afterok`. The
-warning is a best-effort recovery window, not a guarantee that a slow save finishes.
-PBS termination or node failure can still replay work since the last checkpoint.
-Do not change a running job's walltime: the timer is calculated at startup.
+After a failed/timed-out chunk, inspect `qstat -f`, logs and `myhistory`. PBS may
+delete dependent jobs; cancel any surviving obsolete successors before rebuilding
+the dependency chain. Resume the same chunk ID and fixed configuration. For example:
 
-Resubmit the same phase with the same source/settings/output roots. Training
-checkpoints every 100 optimizer steps by default; ICL journals rows and judging
-caches entries. A full replacement chain skips outputs that pass completion checks.
+```bash
+# User-run recovery example: N is the failed chunk, all predecessors verified complete.
+qsub -v RCG_PBS_CHUNK=N scripts/pbs/chunk.pbs
+# Then continue at N+1 using the replacement job's full ID:
+bash scripts/pbs/submit_revision.sh --submit --start NEXT_N --afterok REPLACEMENT_ID
+```
 
-PBS may delete dependent jobs after a failed prerequisite; inspect `myjob`,
-`qstat -f` and `myhistory` first. For a surviving queued dependent job, the user can
-retarget it with `qalter -W depend=afterok:REPLACEMENT_ID PENDING_ID`. Otherwise,
-submit the missing phases again with explicit dependencies, or cancel remaining
-obsolete queued jobs using `qdel JOB_ID` before submitting a fresh chain. These
-are user-run recovery actions. Never leave two chains writing the same roots.
-No automatic submission, cancellation or requeue is performed by these helpers.
+Reserve queued capacity for that replacement too (use `--count 7` or less when
+needed). Downstream full-campaign gates still reject missing producer artifacts.
+For an initial smoke failure, restart from chunk 1. Training uses full-state
+checkpoints; ICL resumes from row journals; judge work reuses per-pass caches.
 
 ## Preserved research settings
 
-The numerical/recovery profile remains `--memory-profile a5000`; the hardware
-target remains `RCG_TARGET_GPU=a100_80gb`, with full-device admission and ≤76 GiB
-peak reserved memory. There is no new qualification of GaLore, 7B FMFT, ordinary
-14B LoRA or 14B ICL. Frozen artifacts, metrics, schemas and default judge keys are
-unchanged. New outputs retain the isolated revision-a100/preflight/judge roots.
-See the [shared scope and paths](../slurm/README.md#paths-and-advanced-scope).
-
-Server package checks, GPU qualification and experiments are still pending.
-Local Bash gates cannot establish runtime compatibility or A100 throughput.
-The old [A5000 budget](../slurm/BUDGET.md) is historical.
-
-PBS option/dependency reference: [PBS Professional Reference Guide](https://help.altair.com/2024.1.0/PBS%20Professional/PBSReferenceGuide2024.1.pdf).
+The numerical/recovery profile remains `--memory-profile a5000`; the target is
+`RCG_TARGET_GPU=a100_80gb`, with full-device admission and ≤76 GiB peak reserved
+memory. No new GaLore, 7B FMFT, ordinary 14B LoRA or 14B ICL is enabled. Frozen
+artifacts, metrics, specs, effective batch and judge cache keys are unchanged.
+Actual server qualification remains necessary. The historical
+[A5000 budget](../slurm/BUDGET.md) is not an A100 benchmark.

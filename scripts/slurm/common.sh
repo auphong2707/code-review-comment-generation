@@ -16,6 +16,10 @@ export PYTHONUNBUFFERED=1 WANDB_MODE="${WANDB_MODE:-offline}" TOKENIZERS_PARALLE
 STEPS_OK=(); STEPS_FAILED=(); STEPS_SKIPPED=()
 STOP_REQUESTED=0
 ACTIVE_PID=""
+CHUNK_STEPS=0
+if [[ -n "${RCG_PBS_STEP:-}" ]]; then
+    [[ -z "${ONLY:-}${SKIP:-}" ]] || { echo "Do not combine a PBS chunk with ONLY/SKIP" >&2; exit 2; }
+fi
 if [[ "$DRY" != 1 ]]; then
     [[ -n "${PBS_JOBID:-}${SLURM_JOB_ID:-}" ]] || { echo "Run real jobs via PBS or Slurm on the server; use DRY=1 locally." >&2; exit 2; }
     if [[ -n "${RCG_CONDA_ENV:-}" ]]; then
@@ -39,11 +43,16 @@ trap request_stop USR1 TERM
 
 selected() {
     local label="$1"
+    [[ -z "${RCG_PBS_STEP:-}" || "$label" == "$RCG_PBS_STEP" ]] || return 1
     [[ -z "${ONLY:-}" || "$label" =~ ${ONLY} ]] && [[ -z "${SKIP:-}" || ! "$label" =~ ${SKIP} ]]
 }
 
 run_step() {
     local label="$1"; shift
+    if [[ -n "${RCG_PBS_STEP:-}" && "$label" != "$RCG_PBS_STEP" ]]; then
+        return 0
+    fi
+    CHUNK_STEPS=$((CHUNK_STEPS + 1))
     if [[ -n "${ONLY:-}" && ! "$label" =~ ${ONLY} ]] || [[ -n "${SKIP:-}" && "$label" =~ ${SKIP} ]]; then
         STEPS_SKIPPED+=("$label"); echo "SKIP $label"; return 0
     fi
@@ -128,6 +137,10 @@ icl_run() {
 declare -A GEN_BS=([codet5]=1 [plbart]=1 [qwen25-0.5b]=1 [qwen25]=1 [qwen15]=1 [qwen25-14b]=1)
 finish_report() {
     [[ "$STOP_REQUESTED" == 0 ]] || exit 75
+    if [[ -n "${RCG_PBS_STEP:-}" ]]; then
+        [[ "$CHUNK_STEPS" == 1 ]] || { echo "PBS chunk must select exactly one step: $RCG_PBS_STEP" >&2; return 2; }
+        echo "Chunk complete: $RCG_PBS_STEP (whole-campaign gate is separate)"
+    fi
     printf 'Phase %s: %s successful, %s filtered, %s failed\n' "$JOB_TAG" "${#STEPS_OK[@]}" "${#STEPS_SKIPPED[@]}" "${#STEPS_FAILED[@]}"
     if [[ ${#STEPS_SKIPPED[@]} -gt 0 ]]; then
         echo "Filtered execution is not a complete campaign; resubmit without ONLY/SKIP for its gate."

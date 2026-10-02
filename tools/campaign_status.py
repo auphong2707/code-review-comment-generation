@@ -37,7 +37,7 @@ def row_count(path):
 def commands(phase, results_root):
     env = dict(os.environ, DRY="1", RCG_JSON="1", RCG_PYTHON=sys.executable,
                RCG_ROOT=str(ROOT), RCG_RESULTS_ROOT=str(results_root))
-    for key in ("ONLY", "SKIP"):
+    for key in ("ONLY", "SKIP", "RCG_PBS_STEP"):
         env.pop(key, None)
     # J checks several producers in one process. Their optional block meanings
     # differ (e.g. B/C P2 is supported while D P2 is forbidden).

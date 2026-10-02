@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.llm_as_judge import JudgeConfig
-from src.llm_as_judge.integration import failed_judge_result
+from src.llm_as_judge.integration import JUDGE_COLUMNS, failed_judge_result
 from src.llm_as_judge.qwen_judge import make_judge
 
 
@@ -193,6 +193,33 @@ def filter_jobs(job_group: str, limit_jobs: int | None, jobs_source: list | None
 
 def output_stem(job_group: str) -> str:
     return "" if job_group == "all" else f"_{job_group}"
+
+
+def shard_jobs(jobs: list[dict], index: int | None, count: int | None) -> list[dict]:
+    """Partition whole artifacts without altering any rows or cache identities."""
+    if index is None and count is None:
+        return jobs
+    if index is None or count is None or count < 1 or not 0 <= index < count:
+        raise ValueError("Provide both shard flags with 0 <= index < count")
+    selected = jobs[index::count]
+    if not selected:
+        raise ValueError("Empty judge shard; check the inventory and shard count")
+    return selected
+
+
+def require_complete(manifest_rows: Iterable[Mapping], column_prefix: str) -> None:
+    """Reject missing, truncated or stale scored artifacts before final aggregation."""
+    columns = [column_prefix + name.removeprefix("qwen_judge_") for name in JUDGE_COLUMNS]
+    for job in manifest_rows:
+        inputs = load_jsonl(Path(job["input_path"]))
+        outputs = load_jsonl(Path(job["output_path"]))
+        if not inputs or len(inputs) != len(outputs):
+            raise ValueError(f"Incomplete judged rows: {job['job_id']}")
+        for expected, actual in zip(inputs, outputs):
+            if any(actual.get(key) != value for key, value in expected.items()):
+                raise ValueError(f"Stale judged input: {job['job_id']}")
+            if any(key not in actual for key in columns):
+                raise ValueError(f"Missing judge columns: {job['job_id']}")
 
 
 def job_label(job: Mapping) -> str:
@@ -445,6 +472,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Number of judge records to generate per batch")
     parser.add_argument("--mock", action="store_true", help="Use deterministic mock judge scores")
     parser.add_argument("--limit-jobs", type=int, default=None, help="Smoke-test only: score first N jobs")
+    parser.add_argument("--job-shard-index", type=int, default=None, help="Zero-based whole-artifact shard")
+    parser.add_argument("--job-shard-count", type=int, default=None, help="Total whole-artifact shards")
+    parser.add_argument("--require-complete", action="store_true", help="Validate all scored rows before summary")
     parser.add_argument("--limit-samples", type=int, default=None, help="Smoke-test only: score first N samples per job")
     parser.add_argument("--jobs-file", default=None,
                         help="JSON list of JOBS-shaped dicts (revision runs); default: the frozen JOBS table")
@@ -505,6 +535,10 @@ def main() -> None:
     if args.jobs_file:
         jobs_source = json.loads(Path(args.jobs_file).read_text(encoding="utf-8"))
     jobs = filter_jobs(args.job_group, args.limit_jobs, jobs_source)
+    jobs = shard_jobs(jobs, args.job_shard_index, args.job_shard_count)
+    report_group = args.job_group
+    if args.job_shard_index is not None:
+        report_group += f"_shard_{args.job_shard_index:03d}_of_{args.job_shard_count:03d}"
     LOGGER.info("Preparing %s table job(s)", len(jobs))
     LOGGER.info("Job group: %s", args.job_group)
     LOGGER.info("Output root: %s", out_root)
@@ -526,7 +560,7 @@ def main() -> None:
             subset = {subset["dataset"]: subset["indices"]}
         sample_indices = {dataset: set(indices) for dataset, indices in subset.items()}
     manifest_rows = build_inputs(
-        out_root, jobs, args.limit_samples, args.job_group,
+        out_root, jobs, args.limit_samples, report_group,
         sample_indices=sample_indices,
         reuse_inputs=Path(args.reuse_inputs) if args.reuse_inputs else None,
     )
@@ -534,7 +568,9 @@ def main() -> None:
 
     if args.summary_only:
         LOGGER.info("Summary-only mode enabled; skipping judge scoring")
-        summary_path = write_summary(out_root, manifest_rows, args.job_group, args.column_prefix)
+        if args.require_complete:
+            require_complete(manifest_rows, args.column_prefix)
+        summary_path = write_summary(out_root, manifest_rows, report_group, args.column_prefix)
         LOGGER.info("Done. Summary: %s", summary_path)
         return
 
@@ -564,7 +600,9 @@ def main() -> None:
         from src.training.recovery import install_stop_handlers
         install_stop_handlers()
     score_manifest(manifest_rows, config)
-    summary_path = write_summary(out_root, manifest_rows, args.job_group, args.column_prefix)
+    if args.require_complete:
+        require_complete(manifest_rows, args.column_prefix)
+    summary_path = write_summary(out_root, manifest_rows, report_group, args.column_prefix)
     LOGGER.info("Done. Summary: %s", summary_path)
 
 
