@@ -141,6 +141,9 @@ server checkout. Separately transfer:
   `assets/data/Code_Review/msg-{train,valid,test}.jsonl`.
 - Judge weights and tokenizers in `assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct`
   and `assets/models/llm-judge/Llama-3.1-8B-Instruct` (authorized Llama access required).
+  Fetch them on the login node with `bash scripts/pbs/fetch_judge_models.sh` (uses
+  `HF_TOKEN` from `.env`; the token needs gated-repo read access).
+  `submit_revision.sh --submit` refuses to queue anything while either is incomplete.
 - Frozen result JSONs at their original `assets/models/...` paths used by
   `tools/update_llm_judge_tables.py`, plus all 54 legacy input JSONLs in
   `assets/models/llm-as-judge/table-results/inputs/`. Keep legacy inputs read-only.

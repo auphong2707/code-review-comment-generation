@@ -5,7 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT"
 scratch=$(mktemp -d)
 trap 'rc=$?; if (( rc != 0 )) && [[ -f "$scratch/stop-log" ]]; then cat "$scratch/stop-log"; fi; rm -rf "$scratch"' EXIT
-export RCG_ROOT="$ROOT" RCG_PYTHON=/bin/false RCG_JSON=0
+export RCG_ROOT="$ROOT" RCG_PYTHON=/bin/false RCG_JSON=0 RCG_SKIP_INPUT_CHECK=1
 for script in scripts/pbs/*.sh scripts/pbs/*.pbs scripts/slurm/*.sh scripts/slurm/*.sbatch; do
     bash -n "$script"
 done
@@ -71,6 +71,14 @@ if [[ "${BAD_ID:-0}" == 1 ]]; then echo unexpected-output; else echo "$count.aim
 MOCK
 chmod +x "$scratch/bin/qsub"
 export PATH="$scratch/bin:$PATH"
+mkdir -p "$scratch/noweights/scripts/pbs" "$scratch/noweights/scripts/slurm"
+cp scripts/pbs/*.sh scripts/pbs/*.pbs "$scratch/noweights/scripts/pbs/"; cp scripts/slurm/* "$scratch/noweights/scripts/slurm/"
+# Missing judge weights must stop the launcher before any qsub call.
+if (cd "$scratch/noweights"; RCG_ROOT="$scratch/noweights" RCG_SKIP_INPUT_CHECK=0 bash scripts/pbs/submit_revision.sh --submit) 2> "$scratch/noweights.err"; then
+    echo "Launcher submitted without judge weights" >&2; exit 1
+fi
+rg -q "Missing judge input: assets/models/llm-judge/Llama-3.1-8B-Instruct/config.json" "$scratch/noweights.err"
+[[ ! -f "$scratch/calls" ]]
 bash scripts/pbs/submit_revision.sh --submit > "$scratch/ids"
 [[ $(wc -l < "$scratch/calls") -eq 8 ]]
 rg -q 'depend=afterok:1.aimc-hn1 scripts/pbs/bundle.pbs' "$scratch/calls"
