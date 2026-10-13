@@ -11,7 +11,7 @@ for script in scripts/pbs/*.sh scripts/pbs/*.pbs scripts/slurm/*.sh scripts/slur
 done
 for script in scripts/pbs/*.pbs; do
     phase=$(basename "$script" .pbs)
-    [[ "$phase" != chunk && "$phase" != bundle ]] || continue
+    [[ "$phase" != chunk && "$phase" != bundle && "$phase" != pool ]] || continue
     # PBS spools the entry outside the checkout; only PBS_O_WORKDIR locates helpers.
     cp "$script" "$scratch/spooled.pbs"
     (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" DRY=1 bash spooled.pbs) > "$scratch/pbs.txt"
@@ -180,6 +180,12 @@ for ds in trans_review acra_by_ls_pt; do
     [[ ${#bm25[@]} -eq 9 ]]
     for label in "${bm25[@]:1}"; do [[ ",$(dep_of "$label")," == *",$(id_of "${bm25[0]}"),"* ]]; done
 done
+# The pool previews under DRY=1 and refuses to run outside PBS; neither writes state.
+cp scripts/pbs/pool.pbs "$scratch/spooled-pool.pbs"
+(cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PYTHON=/bin/false DRY=1 bash spooled-pool.pbs) > "$scratch/pool-preview"
+rg -q '^Pool preview: 267 tasks' "$scratch/pool-preview"
+rc=0; (unset PBS_JOBID; RCG_POOL_STATE="$scratch/pool-state" bash scripts/pbs/pool.sh) > /dev/null 2>&1 || rc=$?
+[[ "$rc" -eq 2 && ! -e "$scratch/pool-state" ]]
 # Exactly these step-to-step edges: 5 shared run dirs + 6 sweep->official + 16 BM25.
 [[ $(awk -F '\t' 'NR == FNR {if ($2 == "step") step[$1] = 1; next}
     ($1 in step) {n = split($2, d, ","); for (i = 1; i <= n; i++) if (d[i] != 1) c++} END {print c + 0}' \

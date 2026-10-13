@@ -32,28 +32,8 @@ walltime="${RCG_PBS_WALLTIME:-100:00:00}"
 [[ "$walltime" =~ ^([0-9]{1,3}):([0-5][0-9]):([0-5][0-9])$ ]] || { echo "Walltime must be HH:MM:SS" >&2; exit 2; }
 seconds=$((10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]}))
 (( seconds > 600 && seconds <= 360000 )) || { echo "Walltime must exceed 600s and not exceed 100h" >&2; exit 2; }
-# Fail before queueing anything if judge weights are missing or partial; bundle 1
-# otherwise spends hours on training probes before its judge probes reach them.
-if [[ "$mode" == --submit && "${RCG_SKIP_INPUT_CHECK:-0}" != 1 ]]; then
-    missing=()
-    for model in assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct assets/models/llm-judge/Llama-3.1-8B-Instruct; do
-        for file in config.json tokenizer_config.json; do
-            [[ -s "$model/$file" ]] || missing+=("$model/$file")
-        done
-        if [[ -s "$model/model.safetensors.index.json" ]]; then
-            for shard in $(grep -oE '"[^"]+\.safetensors"' "$model/model.safetensors.index.json" | tr -d '"' | sort -u); do
-                [[ -s "$model/$shard" ]] || missing+=("$model/$shard")
-            done
-        elif ! compgen -G "$model/*.safetensors" >/dev/null; then
-            missing+=("$model/*.safetensors")
-        fi
-    done
-    if (( ${#missing[@]} )); then
-        printf 'Missing judge input: %s\n' "${missing[@]}" >&2
-        echo "Fetch with: bash scripts/pbs/fetch_judge_models.sh (login node)" >&2
-        exit 2
-    fi
-fi
+source scripts/pbs/check_judge_inputs.sh
+if [[ "$mode" == --submit ]]; then check_judge_inputs || exit 2; fi
 options=(-V -q "${RCG_PBS_QUEUE:-a100q}" -P "${RCG_PBS_PROJECT:-20260203}" -l "walltime=$walltime")
 inventory=$(bash scripts/pbs/bundles.sh)
 total=$(wc -l <<< "$inventory")
