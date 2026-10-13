@@ -161,13 +161,18 @@ python -m nltk.downloader -d "$NLTK_DATA" wordnet omw-1.4 punkt punkt_tab
 
 Revision outputs (`assets/results/{revision-a100,a100-preflight,a100-judges}`,
 `assets/logs/{a100,pbs}` and PBS `rcg_*.o*` files) travel through the private
-dataset repo named by `HF_REPO_ID` in `.env`, not rsync. After jobs finish, on the
-**login node** (compute nodes have no internet), inside `tmux`/`screen`:
+dataset repo named by `HF_REPO_ID` in `.env`, not rsync. After jobs finish, submit
+the CPU-only upload job from the repository root on the login node:
 
 ```bash
-conda activate rcg-a100
-bash assets/hf_push_from_server.sh      # resumable; re-run after interruption
+qsub assets/hf_push_from_server.pbs     # a100q, ngpus=0, 2 CPUs, 8 GB, 100h (queue max)
 ```
+
+It activates `rcg-a100` (system conda `/app/anaconda3` by default; override with
+`qsub -v CONDA_SH=...,RCG_CONDA_ENV=...`), checks that the node reaches
+huggingface.co and exits 3 if not. Uploads resume, so a timed-out or failed job is
+resubmitted unchanged. If compute nodes have no internet, run
+`bash assets/hf_push_from_server.sh` on the login node inside `tmux` instead.
 
 Then on Ubuntu (needs `.venv/bin/pip install "huggingface-hub==0.34.3"` once):
 
