@@ -45,8 +45,10 @@ RCG_PBS_STEP=nonexistent DRY=1 bash scripts/slurm/12_campaign_a.sbatch > "$scrat
 [[ "$rc" -eq 2 ]]
 RCG_PBS_CHUNK=151 DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/judge"
 rg -q -- '--job-shard-index 0 --job-shard-count 48' "$scratch/judge"
+rg -q -- '--judge-cache-path [^ ]*/qwen-revision/cache/shard_000\.jsonl' "$scratch/judge"
 RCG_PBS_CHUNK=199 DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/summary"
 rg -q -- '--summary-only --require-complete' "$scratch/summary"
+if rg -q -- '--judge-cache-path' "$scratch/summary"; then echo "Summary must not take a shard cache" >&2; exit 1; fi
 cp scripts/pbs/chunk.pbs "$scratch/spooled.pbs"
 (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PBS_CHUNK=2 DRY=1 bash spooled.pbs) > "$scratch/spooled-chunk"
 [[ $(rg -c '^STEP ' "$scratch/spooled-chunk") -eq 1 ]]
@@ -152,4 +154,35 @@ rc=0
 PBS_JOBID=42.aimc-hn1 FAKE_WALLTIME=invalid \
     bash scripts/pbs/run_phase.sh 12_campaign_a > "$scratch/invalid-time" 2>&1 || rc=$?
 [[ "$rc" -eq 2 ]]
-printf 'PASS: eight jobs, 267 internal tasks, 144 producer commands, spooled dispatch, dependencies/failures, scope guards and nested timed recovery\n'
+# Parallel-pool prerequisites: complete, acyclic, and every edge points backwards, so
+# inventory order is a valid run order. Pin the edges that protect shared outputs.
+bash scripts/pbs/pool_deps.sh > "$scratch/deps"
+diff -u <(cut -f1 "$scratch/chunks") <(cut -f1 "$scratch/deps")
+awk -F '\t' '{n = split($2, d, ","); for (i = 1; i <= n; i++) if (d[i] + 0 >= $1 + 0) exit 1}' "$scratch/deps"
+awk -F '\t' '{n = split($2, d, ","); if (n == 0) print $1, $1; for (i = 1; i <= n; i++) print d[i], $1}' "$scratch/deps" | tsort > /dev/null
+dep_of() { awk -F '\t' -v id="$(awk -F '\t' -v l="$1" '$4 == l {print $1}' "$scratch/chunks")" '$1 == id {print $2}' "$scratch/deps"; }
+id_of() { awk -F '\t' -v l="$1" '$4 == l {print $1}' "$scratch/chunks"; }
+for pair in 'b_tr_codet5_lora_control a_p0_codet5_lora_seed42' 'b_tr_plbart_lora_control a_p0_plbart_lora_seed42' \
+            'b_tr_qwen05b_lora_control a_p0_qwen25-0.5b_lora_seed42' 'b_tr_qwen25_lora_control a_p0_qwen25_lora_seed42' \
+            'b_tr_qwen15_lora_control a_p0_qwen15_lora_seed42'; do
+    read -r control base <<< "$pair"
+    [[ -n "$(id_of "$control")" && -n "$(id_of "$base")" ]]
+    [[ ",$(dep_of "$control")," == *",$(id_of "$base"),"* ]]
+done
+for ds in trans_review acra_by_ls_pt; do
+    for lr in 0 1 2; do [[ ",$(dep_of "d_${ds}_qlora_official")," == *",$(id_of "d_${ds}_qlora_sweep_lr$lr"),"* ]]; done
+done
+[[ $(awk -F '\t' '$2 == "judge" && $3 == "llama-legacy"' "$scratch/chunks" | wc -l) -eq 18 ]]
+awk -F '\t' 'NR == FNR {if ($2 == "judge" && $3 == "llama-legacy") legacy[$1] = 1; next} ($1 in legacy) && $2 != "1" {exit 1}' "$scratch/chunks" "$scratch/deps"
+# The shared BM25 index pickle is built by the first BM25 step of each dataset.
+for ds in trans_review acra_by_ls_pt; do
+    bm25=($(awk -F '\t' -v ds="$ds" '$2 == "step" && $4 ~ ("_" ds "_[0-9]+shot_bm25$") {print $4}' "$scratch/chunks"))
+    [[ ${#bm25[@]} -eq 9 ]]
+    for label in "${bm25[@]:1}"; do [[ ",$(dep_of "$label")," == *",$(id_of "${bm25[0]}"),"* ]]; done
+done
+# Exactly these step-to-step edges: 5 shared run dirs + 6 sweep->official + 16 BM25.
+[[ $(awk -F '\t' 'NR == FNR {if ($2 == "step") step[$1] = 1; next}
+    ($1 in step) {n = split($2, d, ","); for (i = 1; i <= n; i++) if (d[i] != 1) c++} END {print c + 0}' \
+    "$scratch/chunks" "$scratch/deps") -eq 27 ]]
+
+printf 'PASS: eight jobs, 267 internal tasks, acyclic pool prerequisites, 144 producer commands, spooled dispatch, dependencies/failures, scope guards and nested timed recovery\n'

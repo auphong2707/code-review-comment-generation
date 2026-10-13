@@ -40,7 +40,11 @@ case "$RCG_CHUNK_KIND" in
         if [[ "$RCG_CHUNK_KIND" == summary ]]; then
             args+=(--summary-only --require-complete)
         else
-            args+=(--job-shard-index "$RCG_CHUNK_ITEM" --job-shard-count "$count")
+            # Shards may run concurrently; a shared cache JSONL would interleave appends
+            # on NFS. Shards cover whole artifacts, so keys never need to cross shards.
+            printf -v shard '%03d' "$RCG_CHUNK_ITEM"
+            args+=(--job-shard-index "$RCG_CHUNK_ITEM" --job-shard-count "$count"
+                   --judge-cache-path "$JUDGE_ROOT/$RCG_CHUNK_PHASE/cache/shard_$shard.jsonl")
         fi
         run_step "${RCG_CHUNK_KIND}_${RCG_CHUNK_PHASE}_${RCG_CHUNK_ITEM}" "$PYTHON" tools/update_llm_judge_tables.py "${args[@]}"
         ;;
