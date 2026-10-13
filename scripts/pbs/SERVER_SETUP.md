@@ -122,16 +122,20 @@ to the installation's `etc/profile.d/conda.sh`. Preserve these exports in subseq
 login sessions and resubmissions. After exiting the interactive job, activate
 `rcg-a100` and repeat these exports from the same checkout on the login node
 before submitting. Do not carry an interactive job's `CUDA_VISIBLE_DEVICES`
-override into submission; PBS must assign the new job's GPU. No job logs into
-Hugging Face or uploads results.
+override into submission; PBS must assign the new job's GPU. No PBS job logs into
+Hugging Face or uploads results; uploads are user-run from the login node (below).
 
 ## Transfer inputs and prepare caches
 
-Create and update the server checkout (code, `paper/generated/cr_judge_subset.json`
-and local assets) by running `bash assets/rsync_to_server.txt` on Ubuntu. It creates
-the target directory, excludes `.git`, and writes `SOURCE_COMMIT` (`-dirty` marks
-uncommitted changes). Transfers are user-run. Do not copy Ubuntu's `.venv`, macOS environments, `.env`, or ignored AI
-documentation into the server checkout. Separately transfer:
+Create and update the server checkout by running `bash assets/rsync_to_server.txt`
+on Ubuntu. It carries only code (including `paper/generated/cr_judge_subset.json`),
+datasets (`assets/data`), model weights (`assets/models`), the HF push helper and the
+local `.env` (Hugging Face token; keep it mode 600). It excludes `.git`, `.venv`,
+ignored AI documentation and every revision output (`assets/results`, `assets/logs`,
+PBS `rcg_*.o*` files); `--delete` never removes excluded server paths.
+`bash assets/rsync_from_server.txt` mirrors the same scope back and never overwrites
+the local `.env`. Transfers are user-run. Do not copy macOS environments into the
+server checkout. Separately transfer:
 
 - `assets/data/Trans_Review/{train,val,test}.jsonl` and
   `assets/data/Code_Review/msg-{train,valid,test}.jsonl`.
@@ -152,6 +156,28 @@ compute queue. NLTK resources can be provisioned on the server with:
 export NLTK_DATA="$PWD/assets/cache/nltk_data"
 python -m nltk.downloader -d "$NLTK_DATA" wordnet omw-1.4 punkt punkt_tab
 ```
+
+## Return revision outputs through Hugging Face
+
+Revision outputs (`assets/results/{revision-a100,a100-preflight,a100-judges}`,
+`assets/logs/{a100,pbs}` and PBS `rcg_*.o*` files) travel through the private
+dataset repo named by `HF_REPO_ID` in `.env`, not rsync. After jobs finish, on the
+**login node** (compute nodes have no internet), inside `tmux`/`screen`:
+
+```bash
+conda activate rcg-a100
+bash assets/hf_push_from_server.sh      # resumable; re-run after interruption
+```
+
+Then on Ubuntu (needs `.venv/bin/pip install "huggingface-hub==0.34.3"` once):
+
+```bash
+bash assets/hf_pull_to_local.sh                                 # everything
+bash assets/hf_pull_to_local.sh 'assets/results/revision-a100/*' # or a subset
+```
+
+Files land at the same paths in the local checkout. Free accounts have a private
+storage quota; check the account billing page before uploading full checkpoints.
 
 Reserve storage for every retained run's best/latest full recovery checkpoints,
 predictions, judge caches and logs, beyond the input transfer size. Do not place
