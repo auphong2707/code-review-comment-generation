@@ -143,7 +143,8 @@ server checkout. Separately transfer:
   and `assets/models/llm-judge/Llama-3.1-8B-Instruct` (authorized Llama access required).
   Fetch them on the login node with `bash scripts/pbs/fetch_judge_models.sh` (uses
   `HF_TOKEN` from `.env`; the token needs gated-repo read access).
-  `submit_revision.sh --submit` refuses to queue anything while either is incomplete.
+  `submit_pool.sh` and `submit_revision.sh --submit` refuse to queue anything while
+  either is incomplete.
 - Frozen result JSONs at their original `assets/models/...` paths used by
   `tools/update_llm_judge_tables.py`, plus all 54 legacy input JSONLs in
   `assets/models/llm-as-judge/table-results/inputs/`. Keep legacy inputs read-only.
@@ -232,8 +233,19 @@ predates this corrected bridge/revision workflow; use this document for launch.
 
 ## Submit and inspect
 
-See [README.md](README.md) for the eight-job chain and recovery instructions.
-On the SUTD login node, set the PBS queue/project, preview, then submit yourself:
+**Default: one parallel pool job** (details, keeper cron line and failure recovery in
+[README.md](README.md)). It runs all tasks concurrently on its GPUs and resubmits
+itself at the 100 h walltime until everything is done:
+
+```bash
+export RCG_PYTHON=/scratch/congthanh_le/conda/envs/rcg-a100/bin/python
+bash scripts/pbs/submit_pool.sh --preview
+bash scripts/pbs/submit_pool.sh --gpus 2
+bash scripts/pbs/pool_status.sh
+```
+
+**Fallback: the eight-job serial chain.** On the SUTD login node, set the PBS
+queue/project, preview, then submit yourself:
 
 ```bash
 export RCG_PBS_QUEUE=a100q
