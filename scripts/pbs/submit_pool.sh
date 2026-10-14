@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Submit one parallel pool job (scripts/pbs/pool.pbs). Used by the user (first start),
-# by a finishing pool (--continue, from the compute node) and by pool_keeper.sh (cron).
+# by a finishing pool and by pool_keeper.sh (both --continue: keep the error count, retry).
 #   bash scripts/pbs/submit_pool.sh [--gpus 1..4] [--preview] [--continue]
 # The environment is passed explicitly with -v and recorded in the pool state so the
 # keeper (cron, minimal environment) and continuations reuse it; -V is never used.
@@ -60,9 +60,13 @@ done
 source scripts/pbs/check_judge_inputs.sh
 [[ "$mode" == preview ]] || check_judge_inputs || exit 2
 
+# Submitted as a command (qsub -- bash pool.pbs), not as a spooled script: on aimc-gna1
+# the MoM spool directory lost its search bit (2026-10-09 reboot) and every spooled
+# script exits 126 "Permission denied". #PBS lines are not read in this form, so every
+# directive is given here.
 command_args=(qsub -N rcg_pool -q "$RCG_PBS_QUEUE" -P "$RCG_PBS_PROJECT"
     -l "select=1:ncpus=$((8 * gpus)):ngpus=$gpus:mem=$((64 * gpus))gb" -l "walltime=$RCG_PBS_WALLTIME"
-    -v "$passed" scripts/pbs/pool.pbs)
+    -j oe -v "$passed" -- /bin/bash "$ROOT/scripts/pbs/pool.pbs")
 if [[ "$mode" == preview ]]; then printf '%q ' "${command_args[@]}"; printf '\n'; exit 0; fi
 
 # One pool at a time (two would be safe through leases, but would double the queued
@@ -77,13 +81,16 @@ if [[ -n "$others" ]]; then
     echo "A pool job is already queued/running: $(tr '\n' ' ' <<< "$others")- not submitting another" >&2
     exit 0
 fi
-mkdir -p "$STATE"
+mkdir -p "$STATE" "${RCG_POOL_LOG_ROOT:-$ROOT/assets/logs/a100/pool}"   # keeper's cron line logs there
 for key in "${RECORDED[@]}"; do [[ -z "${!key:-}" ]] || printf '%s=%s\n' "$key" "${!key}"; done > "$RECORD"
 (( continuing )) || rm -f "$STATE/errors"      # a user submission re-arms after a fix
 tries=1; (( continuing )) && tries=3
 for ((i = 1; i <= tries; i++)); do
     if submitted=$("${command_args[@]}" 2>&1); then
         rm -f "$STATE/last_exit"      # a queued pool re-arms the keeper (e.g. after a fix)
+        # pool.pbs removes this when it starts; the keeper counts a job that ended with it
+        # still present as a setup error (the job died before its script ran).
+        grep -oE '^[0-9]+\.[^[:space:]]+' <<< "$submitted" | tail -1 > "$STATE/unstarted" || true
         echo "$submitted rcg_pool gpus=$gpus"
         exit 0
     fi

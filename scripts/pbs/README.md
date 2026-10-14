@@ -43,12 +43,21 @@ is fastest but waits for four free GPUs on the shared node. Only one pool is que
 a time. Logs: `assets/logs/a100/pool/<jobid>/chunk_<id>_<time>.log` plus the PBS
 `rcg_pool.o<jobid>` file.
 
+**Command-form submission.** `submit_pool.sh` runs `qsub ... -- /bin/bash
+<repo>/scripts/pbs/pool.pbs` instead of spooling the script: since its 2026-10-09
+reboot, aimc-gna1's PBS spool directory (`/var/spool/pbs/mom_priv/jobs`, mode 0644)
+makes every spooled batch script exit 126 with `.SC: Permission denied` within a
+second (jobs 19492, 19561). Interactive jobs and command-form jobs are unaffected. Do
+not `qsub scripts/pbs/pool.pbs` directly; the eight-job fallback below still spools
+its scripts and fails on that node until the cluster admins restore the directory.
+
 **Failures.** `pool_status.sh` lists failed tasks and their logs. After fixing the
 cause, delete `assets/results/revision-a100/.pool/failed/<id>` and run
 `submit_pool.sh` again. The keeper never resubmits a finished (verdict 0) or
 failure-blocked (1) campaign; a pool that dies during setup (verdict 2, e.g. GPU
-allocation mismatch or a bad `RCG_PYTHON`) is retried, but after three setup errors in
-a row the keeper waits for you (`.pool/errors`; a manual `submit_pool.sh` re-arms it).
+allocation mismatch, a bad `RCG_PYTHON`, or a job that ended before its script ran,
+`rc=unstarted`) is retried, but after three setup errors in a row the keeper waits for
+you (`.pool/errors`; a manual `submit_pool.sh` re-arms it).
 
 **Stopping.** `touch assets/results/revision-a100/.pool/stop` makes the running pool
 checkpoint its tasks and exit within a minute, and stops all resubmission (pool,

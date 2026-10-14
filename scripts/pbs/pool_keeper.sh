@@ -34,5 +34,17 @@ if ! jobs=$(qselect -u "${USER:-$(id -un)}" -N rcg_pool 2>&1); then
     stamp "qselect failed ($jobs); not submitting blind"; exit 0
 fi
 [[ -z "$jobs" ]] || { stamp "pool job present: $(tr '\n' ' ' <<< "$jobs")"; exit 0; }
+lost=$(cat "$STATE/unstarted" 2>/dev/null || true); rm -f "$STATE/unstarted"
+started=$(cat "$STATE/started" 2>/dev/null || true)
+if [[ -n "$lost" && "${lost%%.*}" != "${started%%.*}" ]]; then
+    # Submitted, gone from the queue, and pool.pbs never ran (e.g. a broken node spool,
+    # exit 126): no verdict was written, so count it here or the keeper would loop.
+    # (A job that started before its mark was written left its ID in .pool/started.)
+    errors=$((errors + 1)); verdict=2
+    echo "$errors" > "$STATE/errors"
+    printf '2 %s %s rc=unstarted\n' "$lost" "$(date +%s)" > "$STATE/last_exit"
+    stamp "pool job $lost ended before its script ran ($errors setup errors in a row; see rcg_pool.o*)"
+    (( errors < 3 )) || { stamp "waiting for the user"; exit 0; }
+fi
 stamp "no pool job and work remains (last verdict: ${verdict:-none}); submitting"
-RCG_ROOT="$ROOT" bash scripts/pbs/submit_pool.sh
+RCG_ROOT="$ROOT" bash scripts/pbs/submit_pool.sh --continue    # keeps .pool/errors counting

@@ -241,8 +241,11 @@ echo "555.fake" > "$scratch/qselect"
 rm "$scratch/qselect"
 [[ $(RCG_PYTHON=/bin/true submit --gpus 3) == 0 && $(calls) == 1 ]] || fail "first submission"
 call=$(cat "$scratch/qsub-calls")
-[[ "$call" == *"-N rcg_pool"* && "$call" == *"select=1:ncpus=24:ngpus=3:mem=192gb"* && "$call" == *"walltime=100:00:00"* ]] || fail "resources: $call"
+[[ "$call" == *"-N rcg_pool -q a100q -P 20260203 "* && "$call" == *"select=1:ncpus=24:ngpus=3:mem=192gb"* && "$call" == *"walltime=100:00:00"* ]] || fail "resources: $call"
 [[ "$call" == *"RCG_PYTHON=/bin/true"* && "$call" == *"RCG_ROOT=$ROOT"* && "$call" != *" -V "* ]] || fail "environment: $call"
+# Command form (no spooled script: a broken MoM spool exits 126), so -j oe is explicit.
+[[ "$call" == *" -j oe -v "*" -- /bin/bash $ROOT/scripts/pbs/pool.pbs" ]] || fail "command-form submission: $call"
+[[ "$(cat "$scratch/state/unstarted")" == 777.fake ]] || fail "submission must mark the job unstarted"
 grep -qx 'POOL_GPUS=3' "$scratch/state/submit.env" || fail "submission not recorded"
 
 # 8. A pool that stops at walltime queues its continuation with the recorded settings;
@@ -257,14 +260,16 @@ rc=0; (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PYTHON=/bin/true
 [[ "$rc" == 75 && $(calls) == 1 ]] || fail "continuation not submitted (rc $rc, calls $(calls))"
 grep -q "ngpus=2:mem=128gb" "$scratch/qsub-calls" || fail "continuation resources: $(cat "$scratch/qsub-calls")"
 [[ "$(cut -d' ' -f1 "$scratch/state/last_exit" 2>/dev/null)" == "" ]] || fail "continuation must clear last_exit"
+[[ "$(cat "$scratch/state/unstarted")" == 777.fake ]] || fail "continuation must be marked unstarted"
 # ...but another pool job (different number, any server suffix) blocks it.
 printf '600.aimc-hn2\n599.aimc-hn2\n' > "$scratch/qselect"; rm -f "$scratch/qsub-calls"
 [[ $(PBS_JOBID=600.fake submit --continue) == 0 && $(calls) == 0 ]] || fail "continuation ignored another pool"
 rm "$scratch/qselect"
-echo 1 > "$scratch/qsub-rc"; rm -f "$scratch/qsub-calls"
+echo 1 > "$scratch/qsub-rc"; rm -f "$scratch/qsub-calls"; echo 601.fake > "$scratch/state/unstarted"
 rc=0; (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PYTHON=/bin/true RCG_POOL_SECONDS=4 \
     PBS_JOBID=601.fake bash spooled-pool.pbs) > "$scratch/pool.out" 2>&1 || rc=$?
 [[ "$rc" == 75 && $(calls) == 3 ]] || fail "refused continuation: rc $rc calls $(calls)"
+[[ ! -e "$scratch/state/unstarted" && "$(cat "$scratch/state/started")" == 601.fake ]] || fail "a started pool must clear its mark and record its ID"
 [[ "$(cut -d' ' -f1 "$scratch/state/last_exit")" == 75 ]] || fail "refused continuation must leave last_exit 75"
 rm "$scratch/qsub-rc" "$scratch/mode/default"
 
@@ -296,10 +301,27 @@ rc=0; (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PYTHON=/nonexist
     bash spooled-pool.pbs) > "$scratch/pool.out" 2>&1 || rc=$?
 [[ "$rc" == 2 && "$(cut -d' ' -f1 "$scratch/state/last_exit")" == 2 && "$(cat "$scratch/state/errors")" == 1 ]] ||
     fail "setup error not recorded (rc $rc)"
-[[ $(keeper) == 1 ]] || fail "keeper must retry a first setup error"
+[[ $(keeper) == 1 && "$(cat "$scratch/state/errors")" == 1 ]] || fail "keeper must retry a first setup error and keep its count"
 echo "2 603.fake 1 rc=2" > "$scratch/state/last_exit"; echo 3 > "$scratch/state/errors"
 [[ $(keeper) == 0 ]] || fail "keeper resubmitted after 3 setup errors"
 rm -f "$scratch/qsub-calls"; [[ $(RCG_PYTHON=/bin/true submit) == 0 && ! -e "$scratch/state/errors" ]] || fail "user submission must re-arm"
+# A job that leaves the queue without running pool.pbs (spool exit 126) writes no
+# verdict: the keeper counts it as a setup error and gives up after the third.
+rm -f "$scratch/state/errors" "$scratch/state/last_exit"; echo 610.fake > "$scratch/state/unstarted"
+echo 610.fake > "$scratch/qselect"
+[[ $(keeper) == 0 && "$(cat "$scratch/state/unstarted")" == 610.fake ]] || fail "keeper judged a queued job unstarted"
+rm "$scratch/qselect"
+[[ $(keeper) == 1 && "$(cat "$scratch/state/errors")" == 1 ]] || fail "unstarted job not counted (1)"
+grep -q 'ended before its script ran (1 setup' "$scratch/keeper.out" || fail "unstarted verdict"
+[[ $(keeper) == 1 && "$(cat "$scratch/state/errors")" == 2 ]] || fail "unstarted job not counted (2)"
+[[ $(keeper) == 0 && "$(cat "$scratch/state/errors")" == 3 && ! -e "$scratch/state/unstarted" ]] ||
+    fail "keeper looped on jobs that never start"
+[[ $(keeper) == 0 ]] || fail "keeper resubmitted after 3 unstarted jobs"
+# A job that started before its mark was written (fast start) is not a setup error.
+rm -f "$scratch/state/errors"; echo "75 620.aimc-hn2 1" > "$scratch/state/last_exit"
+echo 620.aimc-hn2 > "$scratch/state/unstarted"; echo 620.aimc-hn2 > "$scratch/state/started"
+[[ $(keeper) == 1 && ! -e "$scratch/state/errors" ]] || fail "keeper counted a started job as unstarted"
+grep -q -- '--continue' <(grep -n 'submit_pool.sh' scripts/pbs/pool_keeper.sh | tail -1) || fail "keeper must submit with --continue"
 
 # 9c. Stop file: a running pool drains (checkpoint, no failures), queues no continuation;
 #     keeper and launcher refuse until it is removed.

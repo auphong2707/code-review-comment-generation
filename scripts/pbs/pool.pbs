@@ -17,6 +17,9 @@ error_verdict() {
     printf '2 %s %s rc=%s\n' "${PBS_JOBID:-local}" "$(date +%s)" "$1" > "$STATE/last_exit"
     echo $(( $(cat "$STATE/errors" 2>/dev/null || echo 0) + 1 )) > "$STATE/errors"
 }
+# Mark this job as started (pool_keeper.sh compares it with the submission mark;
+# the job may start before submit_pool.sh has written that mark).
+[[ "${DRY:-0}" == 1 ]] || { mkdir -p "$STATE"; echo "${PBS_JOBID:-local}" > "$STATE/started"; rm -f "$STATE/unstarted"; }
 [[ -x "${RCG_PYTHON:-}" ]] || {
     echo "Set RCG_PYTHON to the rcg-a100 interpreter (absolute path)" >&2; error_verdict 2; exit 2; }
 export PATH="$(dirname "$RCG_PYTHON"):/opt/pbs/bin:$PATH"
