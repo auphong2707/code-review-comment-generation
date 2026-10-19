@@ -9,7 +9,7 @@
 #PBS -l walltime=100:00:00
 #PBS -j oe
 ROOT="${RCG_ROOT:-${PBS_O_WORKDIR:?Submit from the repository root}}"
-STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100}/.pool}"
+STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 # Verdicts for the keeper: pool.sh writes 0/75/1; anything else (setup error, crash) is
 # recorded as 2 so the keeper stops after repeated errors instead of resubmitting forever.
 error_verdict() {

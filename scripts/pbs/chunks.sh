@@ -17,7 +17,7 @@ for pair in '12_campaign_a A' '13_campaign_b B' '14_campaign_c C' '15_campaign_d
     emit gate "$letter" all
 done
 emit prepare J all
-# At the default scope, 133 revision artifacts / 48 = 2–3 artifacts per job;
+# At the default scope, 100 revision artifacts / 48 = 2–3 artifacts per job;
 # 54 legacy artifacts / 18 = 3. Each artifact retains its complete row set.
 for backend in qwen-revision llama-legacy llama-revision; do
     count=48; [[ "$backend" != llama-legacy ]] || count=18

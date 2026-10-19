@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bash-only checks of the parallel pool over the real 267-task inventory with fake tasks,
+# Bash-only checks of the parallel pool over the real 226-task inventory with fake tasks,
 # fake GPUs and fake qstat: dependency order, memory/count caps, stop -> resume, failure
 # isolation, OOM retry, stale/live leases and killing a stuck task's process tree.
 set -euo pipefail
@@ -50,10 +50,13 @@ case "$mode" in
     killed-once) if [[ ! -e "$FAKE/killed-$id" ]]; then touch "$FAKE/killed-$id"
                      echo "end $id $CUDA_VISIBLE_DEVICES $(date +%s%N) 137" >> "$EVENTS"; kill -9 $$; fi; end 0 ;;
     always75) end 75 ;;
+    # The task cannot finish an uninterruptible stage before RCG_DEADLINE: commit, mark, 75.
+    defer-once) if [[ ! -e "$FAKE/deferred-$id" ]]; then touch "$FAKE/deferred-$id"
+                    echo "$RCG_DEADLINE" > "$FAKE/deadline-$id"; echo "eval needs time" > "$RCG_DEFER_FILE"; end 75; fi; end 0 ;;
 esac
 EOF
 run_pool() { local rc=0; RCG_POOL_STATE="$scratch/state" RCG_POOL_LOG_ROOT="$scratch/logs" bash scripts/pbs/pool.sh > "$scratch/pool.out" 2>&1 || rc=$?; echo "$rc"; }
-reset() { rm -rf "$scratch/state" "$scratch/logs" "$scratch/mode" "$EVENTS" "$scratch"/oom-* "$scratch"/killed-* "$scratch/jobstates" "$scratch/unknown" "$scratch/qstat-extra"; mkdir -p "$scratch/mode"; }
+reset() { rm -rf "$scratch/state" "$scratch/logs" "$scratch/mode" "$EVENTS" "$scratch"/oom-* "$scratch"/killed-* "$scratch"/deferred-* "$scratch"/deadline-* "$scratch/jobstates" "$scratch/unknown" "$scratch/qstat-extra"; mkdir -p "$scratch/mode"; }
 fail() { echo "FAIL: $*" >&2; tail -20 "$scratch/pool.out" >&2; exit 1; }
 
 # Replays events: every task starts after all its prerequisites ended successfully, and
@@ -90,7 +93,7 @@ check_events() {
 # 1. Full run: everything completes in dependency order within the caps.
 reset
 [[ $(run_pool) == 0 ]] || fail "full run exit"
-[[ $(ls "$scratch/state/done" | wc -l) -eq 267 ]] || fail "not all done"
+[[ $(ls "$scratch/state/done" | wc -l) -eq 226 ]] || fail "not all done"
 [[ -z "$(ls -A "$scratch/state/lease")" ]] || fail "leases left"
 check_events
 grep -q 'start 1 .*cost=70GiB' "$scratch/pool.out" || fail "chunk 1 must be exclusive"
@@ -107,7 +110,7 @@ RCG_POOL_SECONDS=4 rc=$(RCG_POOL_SECONDS=4 run_pool)
 [[ -z "$(ls -A "$scratch/state/lease")" && -z "$(ls -A "$scratch/state/failed")" ]] || fail "stop left leases/failures"
 grep -q 'incomplete' "$scratch/pool.out" || fail "no checkpointed task"
 rm "$scratch/mode/default"
-[[ $(run_pool) == 0 && $(ls "$scratch/state/done" | wc -l) -eq 267 ]] || fail "resume did not finish"
+[[ $(run_pool) == 0 && $(ls "$scratch/state/done" | wc -l) -eq 226 ]] || fail "resume did not finish"
 
 # 3. A failure blocks only its dependents: D sweep lr0 fails -> D official, gate D,
 #    prepare J and revision judging/summaries blocked; llama-legacy still completes.
@@ -118,12 +121,12 @@ echo fail > "$scratch/mode/$sweep"
 [[ $(run_pool) == 1 ]] || fail "only-blocked pool must exit 1"
 [[ -e "$scratch/state/failed/$sweep" && ! -e "$scratch/state/done/$official" ]] || fail "failure not isolated"
 grep -q "^start $official " "$EVENTS" && fail "dependent of a failed task started"
-[[ -e "$scratch/state/done/$(id_of d_acra_by_ls_pt_qlora_official)" ]] || fail "independent D work blocked"
+[[ -e "$scratch/state/done/$(id_of c_qwen15_acra_by_ls_pt_10shot_bm25)" ]] || fail "independent work blocked"
 for id in $(awk -F '\t' '$2 == "judge" && $3 == "llama-legacy" {print $1}' <(bash scripts/pbs/chunks.sh)); do
     [[ -e "$scratch/state/done/$id" ]] || fail "llama-legacy $id blocked"
 done
 # Blocked: D TR official, gate D, prepare J, 2 x (48 revision judge shards + summary).
-grep -q "summary: 165/267 done, 1 failed, 101 blocked" "$scratch/pool.out" || fail "unexpected done/blocked counts"
+grep -q "summary: 124/226 done, 1 failed, 101 blocked" "$scratch/pool.out" || fail "unexpected done/blocked counts"
 # Retrying after a fix: removing the failure marker lets the pool finish.
 rm "$scratch/mode/$sweep" "$scratch/state/failed/$sweep"
 [[ $(run_pool) == 0 ]] || fail "retry after fix"
@@ -155,6 +158,16 @@ reset
 echo always75 > "$scratch/mode/2"
 [[ $(run_pool) == 1 ]] || fail "repeated exit 75 must end as blocked"
 [[ -e "$scratch/state/failed/2" && $(grep -c '^start 2 ' "$EVENTS") == 3 ]] || fail "exit-75 loop not capped at 3"
+
+# 4d. A task that defers an uninterruptible stage it cannot finish before RCG_DEADLINE is
+#     parked: not relaunched in this job, not a retry or failure; the next pool finishes it.
+reset
+echo defer-once > "$scratch/mode/2"
+[[ $(run_pool) == 75 ]] || fail "a parked task must leave resumable work (75)"
+[[ $(grep -c '^start 2 ' "$EVENTS") == 1 && -z "$(ls -A "$scratch/state/failed")" ]] || fail "deferred task relaunched or failed"
+grep -q 'deferred 2 to the next pool job: eval needs time' "$scratch/pool.out" || fail "deferral not logged"
+[[ "$(cat "$scratch/deadline-2")" =~ ^[0-9]+$ && ! -e "$scratch/state/defer/2" ]] || fail "deadline not passed or marker left"
+[[ $(run_pool) == 0 && -e "$scratch/state/done/2" ]] || fail "deferred task did not finish in the next pool"
 
 # 5. Leases: one from a finished job is reclaimed; one held by a running job is respected.
 reset

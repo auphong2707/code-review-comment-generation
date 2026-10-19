@@ -73,7 +73,7 @@ def main(argv=None):
     parser.add_argument("--quiet", action="store_true",
                         help="Print only the winning LR (no table)")
     parser.add_argument("--require-complete", action="store_true",
-                        help="Require every bracket run to have validated A5000 final results and committed state")
+                        help="Require every bracket run to have validated profile final results and committed state")
     args = parser.parse_args(argv)
     if any(i < 0 or i >= len(LR) for i in args.ids):
         parser.error("Sweep ids must index the configured LR grid")

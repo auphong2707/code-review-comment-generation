@@ -7,8 +7,13 @@ cd "$ROOT_DIR"
 DRY="${DRY:-0}"
 PYTHON="${RCG_PYTHON:-python}"
 export RCG_TARGET_GPU="${RCG_TARGET_GPU:-a100_80gb}"
-REVISION_ROOT="${RCG_RESULTS_ROOT:-$ROOT_DIR/assets/results/revision-a100}"
-PREFLIGHT_ROOT="${RCG_PREFLIGHT_ROOT:-$ROOT_DIR/assets/results/a100-preflight}"
+REVISION_ROOT="${RCG_RESULTS_ROOT:-$ROOT_DIR/assets/results/revision-a100-native}"
+PREFLIGHT_ROOT="${RCG_PREFLIGHT_ROOT:-$ROOT_DIR/assets/results/a100-native-preflight}"
+# A100 profile generation batches: training validation/test generation (GEN_BS) and ICL
+# (ICL_BS, 2,048-token prompts). Smaller for CodeQwen1.5 (full multi-head KV cache).
+declare -A GEN_BS=([codet5]=32 [plbart]=32 [qwen25-0.5b]=32 [qwen25]=16 [qwen15]=8 [qwen25-14b]=8)
+declare -A ICL_BS=([qwen25-0.5b]=16 [qwen25]=8 [qwen15]=4)
+CR_SUBSET="paper/generated/cr_judge_subset.json"
 JOB_TAG="${RCG_PHASE:-${PBS_JOBNAME:-${SLURM_JOB_NAME:-local}}}"
 LOG_ROOT="${RCG_LOG_ROOT:-$ROOT_DIR/assets/logs/a100}/$JOB_TAG"
 export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
@@ -26,7 +31,7 @@ if [[ "$DRY" != 1 ]]; then
         source "${CONDA_SH:?Set CONDA_SH when selecting RCG_CONDA_ENV}"
         set +u; conda activate "$RCG_CONDA_ENV"; set -u
     fi
-    "$PYTHON" -c 'from tools.a5000_preflight import require_gpu; require_gpu()'
+    "$PYTHON" -c 'from tools.a100_preflight import require_gpu; require_gpu()'
     export WANDB_DIR="${WANDB_DIR:-$LOG_ROOT/wandb}"
     export HF_HOME="${HF_HOME:-$ROOT_DIR/assets/cache/huggingface}"
     mkdir -p "$LOG_ROOT" "$WANDB_DIR"
@@ -88,8 +93,8 @@ run_step() {
 require_training_admission() {
     local dataset="$1" model="$2" method="$3"
     if [[ "$DRY" != 1 ]]; then
-        "$PYTHON" tools/a5000_preflight.py --model "$model" --method "$method" \
-            --dataset "$dataset" --out-root "$PREFLIGHT_ROOT" --check
+        "$PYTHON" tools/a100_preflight.py --model "$model" --method "$method" \
+            --dataset "$dataset" --gen-batch-size "${GEN_BS[$model]}" --out-root "$PREFLIGHT_ROOT" --check
     fi
 }
 
@@ -98,8 +103,8 @@ train_official() {
     if selected "$label"; then require_training_admission "$dataset" "$model" "$method"; fi
     run_step "$label" "$PYTHON" -m src.train --model "$model" --method "$method" \
         --learning_rate "$lr" --dataset "$dataset" --results-root "$REVISION_ROOT/$dataset" \
-        --protocol archived --memory-profile a5000 --gen-batch-size 1 --attn-implementation sdpa \
-        --recovery-steps "${RCG_RECOVERY_STEPS:-100}" --skip-if-complete "$@"
+        --protocol archived --memory-profile a100 --gen-batch-size "${GEN_BS[$model]}" \
+        --attn-implementation sdpa --recovery-steps "${RCG_RECOVERY_STEPS:-100}" --skip-if-complete "$@"
 }
 
 train_sweep() {
@@ -110,7 +115,7 @@ train_sweep() {
         run_step "${label}_lr${id}" "$PYTHON" -m src.train --model "$model" --method "$method" \
             --experiment_id "$id" --subset "$subset" --dataset "$dataset" \
             --results-root "$REVISION_ROOT/$dataset/sweeps" --protocol archived \
-            --memory-profile a5000 --gen-batch-size 1 --attn-implementation sdpa \
+            --memory-profile a100 --gen-batch-size "${GEN_BS[$model]}" --attn-implementation sdpa \
             --recovery-steps "${RCG_RECOVERY_STEPS:-100}" --skip-if-complete "$@"
     done
 }
@@ -126,15 +131,17 @@ require_var() {
 icl_run() {
     local label="$1" dataset="$2" model="$3"; shift 3
     if [[ "$DRY" != 1 ]] && selected "$label"; then
-        "$PYTHON" tools/a5000_inference_probe.py --kind icl --model "$model" \
-            --out-root "$PREFLIGHT_ROOT" --check
+        "$PYTHON" tools/a100_inference_probe.py --kind icl --model "$model" \
+            --batch-size "${ICL_BS[$model]}" --out-root "$PREFLIGHT_ROOT" --check
     fi
+    # CodeReviewer ICL runs on the fixed 2,000-row subset the Llama judge also uses.
+    local subset=(); [[ "$dataset" != acra_by_ls_pt ]] || subset=(--sample-index-file "$CR_SUBSET")
     run_step "$label" "$PYTHON" -m src.icl_inference --model_name "$model" --dataset "$dataset" \
-        --prompt-version v2 --memory-profile a5000 --batch-size 1 --max-prompt-tokens 2048 \
-        --attn-implementation sdpa --results_dir "$REVISION_ROOT/icl/$dataset" --skip-if-complete "$@"
+        --prompt-version v2 --memory-profile a100 --batch-size "${ICL_BS[$model]}" --max-prompt-tokens 2048 \
+        --attn-implementation sdpa --results_dir "$REVISION_ROOT/icl/$dataset" "${subset[@]}" \
+        --skip-if-complete "$@"
 }
 
-declare -A GEN_BS=([codet5]=1 [plbart]=1 [qwen25-0.5b]=1 [qwen25]=1 [qwen15]=1 [qwen25-14b]=1)
 finish_report() {
     [[ "$STOP_REQUESTED" == 0 ]] || exit 75
     if [[ -n "${RCG_PBS_STEP:-}" ]]; then

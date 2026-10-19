@@ -21,40 +21,38 @@ run_step infra_icl_help "$PYTHON" -m src.icl_inference --help
 run_step infra_judge_mock "$PYTHON" tools/update_llm_judge_tables.py --mock \
     --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/mock-tables"
 if [[ "${RCG_PROBES:-1}" == 1 ]]; then
+    # Every training configuration the campaigns run (all TransReview): A seeds and B DoRA
+    # for the small models, LoRA seeds and DoRA for the 7B models, D 14B QLoRA.
     for model in codet5 plbart qwen25-0.5b qwen25 qwen15; do
-        methods="ia3 lora qlora dora"
-        [[ "$model" == qwen25 || "$model" == qwen15 ]] || methods+=" fmft"
+        methods="lora dora"
+        [[ "$model" == qwen25 || "$model" == qwen15 ]] || methods="ia3 lora qlora fmft dora"
         for method in $methods; do
-            run_step "probe_tr_${model}_${method}" "$PYTHON" tools/a5000_preflight.py \
-                --model "$model" --method "$method" --dataset trans_review --out-root "$PREFLIGHT_ROOT"
-        done
-        # Matched A5000 LoRA controls accompany DoRA on CodeReviewer.
-        for method in lora dora; do
-            run_step "probe_cr_${model}_${method}" "$PYTHON" tools/a5000_preflight.py \
-                --model "$model" --method "$method" --dataset acra_by_ls_pt --out-root "$PREFLIGHT_ROOT"
+            run_step "probe_tr_${model}_${method}" "$PYTHON" tools/a100_preflight.py \
+                --model "$model" --method "$method" --dataset trans_review \
+                --gen-batch-size "${GEN_BS[$model]}" --out-root "$PREFLIGHT_ROOT"
         done
     done
-    for dataset in trans_review acra_by_ls_pt; do
-        run_step "probe_14b_qlora_$dataset" "$PYTHON" tools/a5000_preflight.py \
-            --model qwen25-14b --method qlora --dataset "$dataset" --out-root "$PREFLIGHT_ROOT"
-    done
+    run_step probe_14b_qlora_trans_review "$PYTHON" tools/a100_preflight.py \
+        --model qwen25-14b --method qlora --dataset trans_review \
+        --gen-batch-size "${GEN_BS[qwen25-14b]}" --out-root "$PREFLIGHT_ROOT"
     for model in qwen25-0.5b qwen25 qwen15; do
-        run_step "probe_icl_$model" "$PYTHON" tools/a5000_inference_probe.py \
-            --kind icl --model "$model" --out-root "$PREFLIGHT_ROOT"
+        run_step "probe_icl_$model" "$PYTHON" tools/a100_inference_probe.py \
+            --kind icl --model "$model" --batch-size "${ICL_BS[$model]}" --out-root "$PREFLIGHT_ROOT"
     done
     for model in qwen-judge llama-judge; do
-        run_step "probe_$model" "$PYTHON" tools/a5000_inference_probe.py --kind judge \
+        run_step "probe_$model" "$PYTHON" tools/a100_inference_probe.py --kind judge \
             --model "$model" --max-input-tokens "${JUDGE_MAX_INPUT_TOKENS:-4096}" --out-root "$PREFLIGHT_ROOT"
     done
     # Synthetic pilots alone cannot check dataset parsing, retrieval, metrics or
     # judge input/cache/output plumbing. Exercise those paths on bounded rows.
     for dataset in trans_review acra_by_ls_pt; do
+        subset=(); [[ "$dataset" != acra_by_ls_pt ]] || subset=(--sample-index-file "$CR_SUBSET")
         for model in qwen25-0.5b qwen25 qwen15; do
             run_step "smoke_icl_${dataset}_${model}" "$PYTHON" -m src.icl_inference \
                 --model_name "$model" --dataset "$dataset" --prompt-version v2 \
-                --memory-profile a5000 --batch-size 1 --max-prompt-tokens 2048 \
-                --attn-implementation sdpa --num_examples 3 --selection_method bm25 \
-                --max_samples 2 --results_dir "$PREFLIGHT_ROOT/icl-smoke/$dataset" --skip-if-complete
+                --memory-profile a100 --batch-size "${ICL_BS[$model]}" --max-prompt-tokens 2048 \
+                --attn-implementation sdpa --num_examples 3 --selection_method bm25 "${subset[@]}" \
+                --max_samples "${ICL_BS[$model]}" --results_dir "$PREFLIGHT_ROOT/icl-smoke/$dataset" --skip-if-complete
         done
     done
     run_step smoke_judge_subset test -r paper/generated/cr_judge_subset.json

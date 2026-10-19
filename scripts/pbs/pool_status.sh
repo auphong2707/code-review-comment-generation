@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="${RCG_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$ROOT"
-STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100}/.pool}"
+STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 [[ -d "$STATE" ]] || { echo "No pool state yet at $STATE"; exit 0; }
 now=$(date +%s)
 bash scripts/pbs/chunks.sh | awk -F '\t' -v state="$STATE" -v now="$now" '

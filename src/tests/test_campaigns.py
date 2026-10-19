@@ -36,7 +36,7 @@ def test_six_server_wrappers_preview_without_writes(tmp_path, monkeypatch):
                         RCG_LOG_ROOT=str(tmp_path/'logs'), RCG_PREFLIGHT_ROOT=str(tmp_path/'probes')),
                        cwd=ROOT, capture_output=True, check=True)
     assert list(tmp_path.iterdir()) == []
-    assert {phase: len(status.commands(phase, tmp_path)) for phase in status.SCRIPTS} == dict(A=54, B=16, C=66, D=8)
+    assert {phase: len(status.commands(phase, tmp_path)) for phase in status.SCRIPTS} == dict(A=28, B=5, C=66, D=4)
 
 
 def test_missing_campaign_cannot_be_complete(tmp_path, monkeypatch, capsys):
@@ -85,7 +85,7 @@ def test_launcher_preview_is_a_serial_smoke_gated_chain():
 
 def test_profile_seed42_uses_default_name(tmp_path):
     command = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
-               '--memory-profile', 'a5000', '--results-root', str(tmp_path), '--dry-run']
+               '--memory-profile', 'a100', '--results-root', str(tmp_path), '--dry-run']
     default = json.loads(subprocess.check_output(command, cwd=ROOT))
     explicit = json.loads(subprocess.check_output(command + ['--seed', '42'], cwd=ROOT))
     assert default == explicit
@@ -94,9 +94,8 @@ def test_profile_seed42_uses_default_name(tmp_path):
 def test_per_phase_scope_can_check_all_supported_optional_work(tmp_path, monkeypatch):
     monkeypatch.setattr(os, 'environ', clean_env())
     monkeypatch.setenv('RCG_A_RUN_P1', '1')
-    monkeypatch.setenv('RCG_B_RUN_P2', '1')
     monkeypatch.setenv('RCG_C_RUN_P2', '1')
-    assert {phase: len(status.commands(phase, tmp_path)) for phase in status.SCRIPTS} == dict(A=64, B=20, C=78, D=8)
+    assert {phase: len(status.commands(phase, tmp_path)) for phase in status.SCRIPTS} == dict(A=38, B=5, C=78, D=4)
 
 
 def completed_sweep(root, index, metric):
@@ -184,10 +183,10 @@ def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp
     monkeypatch.setitem(status.DATASET_CONFIGS, 'trans_review', {'data_files': dict(train=str(data), val=str(data), test=str(data))})
     argv = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
             '--learning_rate', '5e-5', '--dataset', 'trans_review', '--results-root', str(tmp_path),
-            '--memory-profile', 'a5000', '--attn-implementation', 'sdpa']
+            '--memory-profile', 'a100', '--gen-batch-size', '32', '--attn-implementation', 'sdpa']
     args = build_parser().parse_args(argv[3:])
     model, method, spec = get_spec(args.model, args.method)
-    spec, overrides = apply_memory_profile(spec, resolve_protocol_overrides(model, args), 'a5000', model, method)
+    spec, overrides = apply_memory_profile(spec, resolve_protocol_overrides(model, args), 'a100', model, method)
     run = resolve_run(spec, learning_rate=args.learning_rate, results_root=args.results_root)
     root = Path(run['experiment_results_dir']); root.mkdir()
     identity = recovery_identity(spec, overrides, args, run)
@@ -197,13 +196,14 @@ def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp
     result.update(run_fingerprint=stamp, expected_test_rows=1, raw_data=[dict(prediction='x', reference='y')])
     (root/'complete_results.json').write_text(json.dumps(result))
     icl_argv = [sys.executable, '-m', 'src.icl_inference', '--model_name', 'qwen25',
-                '--dataset', 'trans_review', '--num_examples', '0', '--results_dir', str(tmp_path)]
+                '--dataset', 'trans_review', '--num_examples', '0', '--batch-size', '8',
+                '--results_dir', str(tmp_path)]
     path = tmp_path/'qwen25_icl_0ex_random_v2.json'
     icl_identity = dict(model_name='qwen25', dataset='trans_review', num_examples=0,
                         selection_method='random', demo_seed=None, prompt_version='v2',
-                        memory_profile='a5000', batch_size=1, max_prompt_tokens=2048,
+                        memory_profile='a100', batch_size=8, max_prompt_tokens=2048,
                         attn_implementation='sdpa', seed=42, allow_exact_match=False,
-                        max_samples=None, llm_judge=False,
+                        max_samples=None, llm_judge=False, sample_index_file=None,
                         train_data_sha256=status.digest(str(data)), test_data_sha256=status.digest(str(data)))
     icl_stamp = fingerprint(icl_identity)
     Path(str(path)+'.identity.json').write_text(json.dumps(dict(identity=icl_identity, fingerprint=icl_stamp)))
@@ -230,11 +230,11 @@ def test_campaign_gate_validates_sweep_subset_coverage(tmp_path, monkeypatch):
                         {'data_files': dict(train=str(data), validation=str(data), test=str(data))})
     argv = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
             '--experiment_id', '0', '--subset', '0.5', '--dataset', 'trans_review',
-            '--results-root', str(tmp_path), '--memory-profile', 'a5000']
+            '--results-root', str(tmp_path), '--memory-profile', 'a100', '--gen-batch-size', '32']
     args = build_parser().parse_args(argv[3:])
     model, method, spec = get_spec(args.model, args.method)
     spec, overrides = apply_memory_profile(spec, resolve_protocol_overrides(model, args),
-                                          'a5000', model, method)
+                                          'a100', model, method)
     run = resolve_run(spec, experiment_id=0, results_root=args.results_root)
     root = Path(run['experiment_results_dir']); root.mkdir()
     identity = recovery_identity(spec, overrides, args, run)

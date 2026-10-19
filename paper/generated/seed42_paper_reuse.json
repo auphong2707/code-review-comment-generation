@@ -1,0 +1,32 @@
+{
+  "description": "Seed 42 of every campaign A configuration and the LoRA control of every campaign B DoRA run is the archived paper run (TransReview, frozen weights and complete_results.json); the A100 campaign trains seeds 1 and 2 and the DoRA runs only (D-049).",
+  "dataset": "trans_review",
+  "seed": 42,
+  "seed42": [
+    {"model": "codet5", "method": "ia3", "learning_rate": "0.0001", "paper_run": "assets/models/review-code-generation/codet5_ia3_official_0.0001", "revision_seeds": [1, 2]},
+    {"model": "codet5", "method": "lora", "learning_rate": "0.001", "paper_run": "assets/models/review-code-generation/codet5_lora_official_0.001", "revision_seeds": [1, 2]},
+    {"model": "codet5", "method": "qlora", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/codet5_qlora_official_5e-05", "revision_seeds": [1, 2]},
+    {"model": "codet5", "method": "fmft", "learning_rate": "0.0005", "paper_run": "assets/models/review-code-generation/codet5_fmft_official_0.0005", "revision_seeds": [1, 2]},
+    {"model": "plbart", "method": "ia3", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/plbart_ia3_official_5e-05", "revision_seeds": [1, 2]},
+    {"model": "plbart", "method": "lora", "learning_rate": "1e-05", "paper_run": "assets/models/review-code-generation/plbart_lora_official_1e-05", "revision_seeds": [1, 2]},
+    {"model": "plbart", "method": "qlora", "learning_rate": "1e-05", "paper_run": "assets/models/review-code-generation/plbart_qlora_official_1e-05", "revision_seeds": [1, 2]},
+    {"model": "plbart", "method": "fmft", "learning_rate": "0.0001", "paper_run": "assets/models/review-code-generation/plbart_fmft_official_0.0001", "revision_seeds": [1, 2]},
+    {"model": "qwen25-0.5b", "method": "ia3", "learning_rate": "0.0005", "paper_run": "assets/models/review-code-generation/qwen25_0.5b_ia3_official_0.0005", "revision_seeds": [1, 2]},
+    {"model": "qwen25-0.5b", "method": "lora", "learning_rate": "0.0005", "paper_run": "assets/models/review-code-generation/qwen25_0.5b_lora_official_0.0005", "revision_seeds": [1, 2]},
+    {"model": "qwen25-0.5b", "method": "qlora", "learning_rate": "0.001", "paper_run": "assets/models/review-code-generation/qwen25_0.5b_qlora_official_0.001", "revision_seeds": [1, 2]},
+    {"model": "qwen25-0.5b", "method": "fmft", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/qwen25_0.5b_fmft_official_5e-05", "revision_seeds": [1, 2]},
+    {"model": "qwen25", "method": "ia3", "learning_rate": "0.001", "paper_run": "assets/models/review-code-generation/qwen25_ia3_official_0.001", "revision_seeds": []},
+    {"model": "qwen25", "method": "lora", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/qwen25_lora_official_5e-05", "revision_seeds": [1, 2]},
+    {"model": "qwen25", "method": "qlora", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/qwen25_qlora_official_5e-05", "revision_seeds": []},
+    {"model": "qwen15", "method": "ia3", "learning_rate": "1e-05", "paper_run": "assets/models/review-code-generation/qwen15_ia3_official_1e-05", "revision_seeds": []},
+    {"model": "qwen15", "method": "lora", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/qwen15_lora_official_5e-05", "revision_seeds": [1, 2]},
+    {"model": "qwen15", "method": "qlora", "learning_rate": "5e-05", "paper_run": "assets/models/review-code-generation/qwen15_qlora_official_5e-05", "revision_seeds": []}
+  ],
+  "dora_lora_controls": [
+    {"model": "codet5", "learning_rate": "0.001", "dora_step": "b_tr_codet5_dora", "control_run": "assets/models/review-code-generation/codet5_lora_official_0.001"},
+    {"model": "plbart", "learning_rate": "1e-05", "dora_step": "b_tr_plbart_dora", "control_run": "assets/models/review-code-generation/plbart_lora_official_1e-05"},
+    {"model": "qwen25-0.5b", "learning_rate": "0.0005", "dora_step": "b_tr_qwen05b_dora", "control_run": "assets/models/review-code-generation/qwen25_0.5b_lora_official_0.0005"},
+    {"model": "qwen25", "learning_rate": "5e-05", "dora_step": "b_tr_qwen25_dora", "control_run": "assets/models/review-code-generation/qwen25_lora_official_5e-05"},
+    {"model": "qwen15", "learning_rate": "5e-05", "dora_step": "b_tr_qwen15_dora", "control_run": "assets/models/review-code-generation/qwen15_lora_official_5e-05"}
+  ]
+}

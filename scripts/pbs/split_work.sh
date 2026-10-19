@@ -2,7 +2,7 @@
 # Producer gates and bounded judge shards, called only through run_chunk.sh.
 RCG_PHASE="chunk_${RCG_PBS_CHUNK:?}"
 source "$RCG_ROOT/scripts/slurm/common.sh"
-JUDGE_ROOT="${RCG_JUDGE_ROOT:-$ROOT_DIR/assets/results/a100-judges}"
+JUDGE_ROOT="${RCG_JUDGE_ROOT:-$ROOT_DIR/assets/results/a100-native-judges}"
 JOBS_FILE="$JUDGE_ROOT/jobs_revision.json"
 TOKEN_LIMIT="${JUDGE_MAX_INPUT_TOKENS:-4096}"
 case "$RCG_CHUNK_KIND" in
@@ -15,13 +15,16 @@ case "$RCG_CHUNK_KIND" in
         done
         run_step j_build_jobs "$PYTHON" tools/revision_judge_jobs.py --results-root "$REVISION_ROOT" --out "$JOBS_FILE"
         for model in qwen-judge llama-judge; do
-            run_step "j_qualify_$model" "$PYTHON" tools/a5000_inference_probe.py --kind judge --model "$model" \
+            run_step "j_qualify_$model" "$PYTHON" tools/a100_inference_probe.py --kind judge --model "$model" \
                 --max-input-tokens "$TOKEN_LIMIT" --out-root "$PREFLIGHT_ROOT" --check
         done
         ;;
     judge|summary)
+        # New (revision) outputs are judged once per judge; the legacy pass over the frozen
+        # paper outputs keeps k=3. k is not part of the cache key.
+        k=1; [[ "$RCG_CHUNK_PHASE" != llama-legacy ]] || k=3
         args=(--out-root "$JUDGE_ROOT/$RCG_CHUNK_PHASE" --judge-local-files-only --judge-device cuda
-              --judge-k 3 --judge-batch-size 1 --judge-input-token-limit "$TOKEN_LIMIT")
+              --judge-k "$k" --judge-batch-size 1 --judge-input-token-limit "$TOKEN_LIMIT")
         count=48
         case "$RCG_CHUNK_PHASE" in
             qwen-revision)

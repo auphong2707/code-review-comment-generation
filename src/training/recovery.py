@@ -35,6 +35,45 @@ def stop_if_requested():
         raise SystemExit(INCOMPLETE)
 
 
+# ---- allocation deadline -------------------------------------------------------
+# The PBS pool exports RCG_DEADLINE (epoch seconds when it starts checkpointing tasks)
+# and a per-task RCG_DEFER_FILE. A task that cannot finish an uninterruptible stage
+# (epoch evaluation, corpus metrics) before the deadline commits its state, writes the
+# marker and exits 75; the pool then parks it until the next allocation.
+DEFAULT_EVAL_SECONDS = 3600
+
+
+def seconds_left():
+    value = os.environ.get("RCG_DEADLINE")
+    if not value:
+        return None
+    import time
+    return float(value) - time.time()
+
+
+def request_defer(reason):
+    """Mark the task deferred and request the ordinary commit-then-exit-75 stop."""
+    print(f"DEFER: {reason}", flush=True)
+    marker = os.environ.get("RCG_DEFER_FILE")
+    if marker:
+        Path(marker).parent.mkdir(parents=True, exist_ok=True)
+        Path(marker).write_text(reason + "\n")
+    request_stop()
+
+
+def defer_if_short(needed_seconds, what):
+    """Exit 75 (deferred) before starting `what` if it cannot finish before the deadline."""
+    left = seconds_left()
+    if left is not None and left < needed_seconds:
+        request_defer(f"{what} needs ~{needed_seconds:.0f}s; {max(left, 0):.0f}s left before the deadline")
+        stop_if_requested()
+
+
+def metric_seconds(rows, device):
+    """Conservative corpus-metric time (BERTScore dominates; CPU is ~10x slower)."""
+    return 300 + rows * (0.5 if device == "cpu" else 0.05)
+
+
 def fingerprint(value):
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
@@ -210,10 +249,67 @@ def attach_recovery(trainer, every_steps=100, stop_after_step=None):
     if trainer.args.save_only_model or trainer.args.world_size != 1:
         raise ValueError("Recovery requires full-state saves on a single GPU/process")
 
+    import time
+    timing_path = Path(trainer.args.output_dir) / "eval_seconds.json"
+
     class RecoveryCallback(TrainerCallback):
+        step_started = None
+        step_seconds = 0.0
+        eval_started = None
+
+        def eval_estimate(self):
+            try:
+                observed = json.loads(timing_path.read_text())["max_seconds"]
+            except (OSError, ValueError, KeyError):
+                return float(os.environ.get("RCG_EVAL_ESTIMATE_S", DEFAULT_EVAL_SECONDS))
+            return 1.25 * observed
+
+        def on_train_begin(self, args, state, control, **kwargs):
+            # A deferred run resumes one step before an epoch evaluation; the step-end
+            # check cannot see that boundary again, so check it before the first step.
+            self.defer_before_epoch_evaluation(args, state)
+            stop_if_requested()
+
+        def on_step_begin(self, args, state, control, **kwargs):
+            self.step_started = time.time()
+
+        def on_epoch_end(self, args, state, control, **kwargs):
+            self.eval_started = time.time()
+
+        def on_evaluate(self, args, state, control, **kwargs):
+            if self.eval_started is None:
+                return
+            seconds = time.time() - self.eval_started
+            self.eval_started = None
+            try:
+                previous = json.loads(timing_path.read_text())["max_seconds"]
+            except (OSError, ValueError, KeyError):
+                previous = 0.0
+            atomic_json(timing_path, {"max_seconds": max(previous, seconds), "last_seconds": seconds})
+
+        def defer_before_epoch_evaluation(self, args, state):
+            """Stop one step before an epoch evaluation that cannot finish in time."""
+            if seconds_left() is None or args.max_steps > 0 or stop_requested():
+                return
+            if str(args.eval_strategy).split(".")[-1].lower() != "epoch":
+                return
+            epochs = int(round(args.num_train_epochs))
+            if epochs < 1 or state.max_steps % epochs:
+                return
+            if (state.global_step + 1) % (state.max_steps // epochs):
+                return
+            needed = self.eval_estimate() + 3 * self.step_seconds
+            if seconds_left() < needed:
+                request_defer(f"epoch evaluation after step {state.global_step + 1} needs ~{needed:.0f}s; "
+                              f"{max(seconds_left(), 0):.0f}s left before the deadline")
+
         def on_step_end(self, args, state, control, **kwargs):
+            if self.step_started is not None:
+                elapsed = time.time() - self.step_started
+                self.step_seconds = elapsed if not self.step_seconds else 0.9 * self.step_seconds + 0.1 * elapsed
             if stop_after_step is not None and state.global_step >= stop_after_step:
                 request_stop()
+            self.defer_before_epoch_evaluation(args, state)
             if control.should_evaluate:
                 return control  # step-evaluation probes must commit their evaluated state too
             # Trainer evaluates epochs AFTER this callback. Never publish a recovery

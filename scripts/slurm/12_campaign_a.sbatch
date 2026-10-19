@@ -18,10 +18,14 @@ source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 WANDB_TAGS="${WANDB_TAGS:-campaignA}"
 RUN_P0="${RUN_P0:-1}"
 RUN_P1="${RUN_P1:-0}"
-SEEDS="${SEEDS:-42 1 2}"
+# Seed 42 is the archived paper run of each configuration (paper/generated/seed42_paper_reuse.json);
+# the campaign trains seeds 1 and 2 under the A100 profile. 7B models repeat seeds
+# for one method only (A_7B_METHODS).
+SEEDS="${SEEDS:-1 2}"
+A_7B_METHODS="${A_7B_METHODS:-lora}"
 
 # ===========================================================================
-# P0 — seed replicates, TransReview, paper LRs (54 runs)
+# P0 — seed replicates, TransReview, paper LRs (28 runs)
 # ===========================================================================
 if [[ "$RUN_P0" == "1" ]]; then
     banner "campaign A / P0 — TransReview seed replicates (order: seq2seq, 0.5B, 7B)"
@@ -48,9 +52,12 @@ if [[ "$RUN_P0" == "1" ]]; then
         "qwen15      qlora 5e-05"
     )
     # seed-major would leave a half-finished replicate set if the wall clock hits;
-    # config-major keeps every finished config complete for all three seeds.
+    # config-major keeps every finished config complete for both seeds.
     for row in "${REPLICATES[@]}"; do
         read -r model method lr <<<"$row"
+        if [[ "$model" == qwen25 || "$model" == qwen15 ]] && [[ " $A_7B_METHODS " != *" $method "* ]]; then
+            continue
+        fi
         for seed in $SEEDS; do
             train_official "a_p0_${model}_${method}_seed${seed}" trans_review \
                 "$model" "$method" "$lr" --seed "$seed"
@@ -59,12 +66,12 @@ if [[ "$RUN_P0" == "1" ]]; then
 fi
 
 # ===========================================================================
-# P1 — HP transfer: does the subset-sweep LR win on full data? (10 commands; 8 additional outputs)
+# P1 — HP transfer: does the subset-sweep LR win on full data? (10 commands, all new outputs)
 # ===========================================================================
 if [[ "$RUN_P1" == "1" ]]; then
     banner "campaign A / P1 — full-data LR grid for two representative configs"
 
-    # Ten grid commands; two reuse matching A5000 seed-42 baseline outputs.
+    # Ten full-data grid commands at the default seed.
     for lr in 1e-05 5e-05 0.0001 0.0005 0.001; do
         train_official "a_p1_hp_codet5_lora_$lr" trans_review codet5 lora "$lr"
     done

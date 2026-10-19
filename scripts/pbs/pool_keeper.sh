@@ -9,7 +9,7 @@ set -uo pipefail
 ROOT="${RCG_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$ROOT" || exit 2
 export PATH="$PATH:/opt/pbs/bin"
-STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100}/.pool}"
+STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 stamp() { printf '%s keeper: %s\n' "$(date '+%F %T')" "$*"; }
 [[ -f "$STATE/submit.env" ]] || { stamp "no pool submitted yet; nothing to keep"; exit 0; }
 lock="$STATE/keeper.lock"

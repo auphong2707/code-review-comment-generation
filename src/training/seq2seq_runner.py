@@ -53,11 +53,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     )
 
     from src.evaluation.metrics import configure_metric_resources
-    configure_metric_resources(device="cpu" if memory_profile else None,
-                               batch_size=1 if memory_profile else None)
+    from .memory_profile import metric_resources
+    metric_policy = metric_resources(memory_profile) or {}
+    configure_metric_resources(**metric_policy)
 
     from .recovery import (latest_recovery_checkpoint, recovery_trainer_class,
-                           attach_recovery, PredictionJournal, stop_if_requested, atomic_json, generation_identity, model_revision)
+                           attach_recovery, PredictionJournal, stop_if_requested, atomic_json, generation_identity, model_revision,
+                           defer_if_short, metric_seconds)
     recover = run_info.get("recovery", False)
     lifecycle = run_info.get("lifecycle_probe", False)
     if lifecycle:
@@ -98,10 +100,14 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     if lifecycle:
         # Dataset preparation uses fixed padded training lengths; retain enough
         # microbatches to exercise two full accumulated optimizer updates.
-        pilot_train_rows = max(8, 2 * (protocol_overrides or {}).get("gradient_accumulation_steps", 1))
+        resolved_args = {**spec["training_args"], **(protocol_overrides or {})}
+        pilot_train_rows = max(8, 2 * resolved_args["per_device_train_batch_size"]
+                               * resolved_args.get("gradient_accumulation_steps", 1))
+        # Full eval/generation batches, so the pilot peak covers batched generation.
+        pilot_eval_rows = max(2, resolved_args.get("per_device_eval_batch_size", 1), gen_batch_size)
         train_dataset = train_dataset.select(range(min(pilot_train_rows, len(train_dataset))))
-        val_dataset = val_dataset.select(range(min(2, len(val_dataset))))
-        test_dataset = test_dataset.select(range(min(2, len(test_dataset))))
+        val_dataset = val_dataset.select(range(min(pilot_eval_rows, len(val_dataset))))
+        test_dataset = test_dataset.select(range(min(pilot_eval_rows, len(test_dataset))))
         # CodeT5 targets are variable-length. Cover the production decoder bound
         # during forward/backward too, with the same ignored-label padding as collator.
         def pad_probe_targets(row):
@@ -151,18 +157,12 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         model = (PeftModel.from_pretrained(base_model, checkpoint, is_trainable=True)
                  if checkpoint else get_peft_model(base_model, build_peft_config(spec, ctx)))
     elif method == "ptuning":
-        # Preserve this experimental legacy path; not admitted by the A5000 profile.
+        # Preserve this experimental legacy path; not admitted by the A100 profile.
         model = load(checkpoint) if checkpoint else load()
         ctx["<model.config.hidden_size>"] = model.config.hidden_size
         model = get_peft_model(model, build_peft_config(spec, ctx))
     else:
         raise ValueError(f"unknown seq2seq method: {method}")
-
-    if memory_profile:
-        model.config.use_cache = False
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
@@ -265,12 +265,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     test_gen_start = time.time()
     with torch.no_grad():
         for i, batch in enumerate(tqdm(test_loader, desc="Evaluating test set")):
+            first = i * gen_batch_size   # journal rows are test-set positions
             if journal:
                 stop_if_requested()
-                previous = journal.get(i)
-                if previous is not None:
-                    predictions.append(previous["prediction"])
-                    references.append(previous["reference"])
+                saved = [journal.get(first + j) for j in range(batch["input_ids"].shape[0])]
+                if all(row is not None for row in saved):
+                    predictions.extend(row["prediction"] for row in saved)
+                    references.extend(row["reference"] for row in saved)
                     continue
             labels = batch["labels"]
             batch = {k: v.to(model.device) for k, v in batch.items()}
@@ -317,13 +318,17 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
                     if len(generated_text.strip()) == 0:
                         generated_text = EMPTY_PLACEHOLDER
                     ref_ids = [t for t in labels[j].tolist() if t != -100]
+                    reference_text = tokenizer.decode(ref_ids, skip_special_tokens=True)
                     predictions.append(generated_text)
-                    references.append(tokenizer.decode(ref_ids, skip_special_tokens=True))
+                    references.append(reference_text)
+                    if journal:
+                        journal.put(first + j, {"prediction": generated_text, "reference": reference_text})
 
     test_generation_time_s = time.time() - test_gen_start
     if journal:
         journal.values()  # Require full coverage before corpus metrics/final publication.
         stop_if_requested()
+        defer_if_short(metric_seconds(len(predictions), metric_policy.get("device")), "test corpus metrics")
     metrics = compute_generation_metrics(predictions, references)
 
     print(f"Test Results:")
@@ -357,7 +362,7 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         complete_results["resources"].update(
             memory_profile=memory_profile, lifecycle_probe=lifecycle,
             resumed_from_step=resumed_from_step, global_step=trainer.state.global_step,
-            metric_device="cpu", metric_batch_size=1,
+            metric_device=metric_policy.get("device"), metric_batch_size=metric_policy.get("batch_size"),
             train_microbatch=training_args.per_device_train_batch_size,
             eval_microbatch=training_args.per_device_eval_batch_size,
             gradient_accumulation_steps=training_args.gradient_accumulation_steps,

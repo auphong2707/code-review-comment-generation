@@ -36,26 +36,37 @@ for id in {1..8}; do
 done
 rg '^STEP [abcd]_' "$scratch/actual" > "$scratch/producers"
 diff -u "$scratch/expected" "$scratch/producers"
-[[ $(wc -l < "$scratch/producers") -eq 144 ]]
+[[ $(wc -l < "$scratch/producers") -eq 103 ]]
+# A100 profile everywhere; no CodeReviewer training; CodeReviewer ICL on the fixed subset.
+[[ $(rg -c -- "--memory-profile a100 " "$scratch/producers") -eq 103 ]]
+if rg -q -- "-m src.train .*--dataset acra_by_ls_pt" "$scratch/producers"; then echo "CodeReviewer training left" >&2; exit 1; fi
+[[ $(rg -c -- "--dataset acra_by_ls_pt .*--sample-index-file paper/generated/cr_judge_subset.json" "$scratch/producers") -eq 33 ]]
+[[ $(rg -c -- "^STEP a_p0_qwen(25|15)_" "$scratch/producers") -eq 4 && $(rg -c -- "^STEP a_p0_.*_seed42:" "$scratch/producers" || true) -eq 0 ]]
 awk '/^PBS chunk / {print $3}' "$scratch/actual" | tr -d ':' > "$scratch/actual-ids"
 cut -f1 "$scratch/chunks" > "$scratch/expected-ids"
 diff -u "$scratch/expected-ids" "$scratch/actual-ids"
 rc=0
 RCG_PBS_STEP=nonexistent DRY=1 bash scripts/slurm/12_campaign_a.sbatch > "$scratch/empty" 2>&1 || rc=$?
 [[ "$rc" -eq 2 ]]
-RCG_PBS_CHUNK=151 DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/judge"
+chunk_id() { awk -F '\t' -v k="$1" -v p="$2" -v i="$3" '$2 == k && $3 == p && $4 == i {print $1}' "$scratch/chunks"; }
+RCG_PBS_CHUNK=$(chunk_id judge qwen-revision 0) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/judge"
 rg -q -- '--job-shard-index 0 --job-shard-count 48' "$scratch/judge"
 rg -q -- '--judge-cache-path [^ ]*/qwen-revision/cache/shard_000\.jsonl' "$scratch/judge"
-RCG_PBS_CHUNK=199 DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/summary"
+rg -q -- '--judge-k 1 ' "$scratch/judge"
+RCG_PBS_CHUNK=$(chunk_id judge llama-revision 0) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/llama-judge"
+rg -q -- '--judge-k 1 ' "$scratch/llama-judge"
+RCG_PBS_CHUNK=$(chunk_id judge llama-legacy 0) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/legacy-judge"
+rg -q -- '--judge-k 3 ' "$scratch/legacy-judge"
+RCG_PBS_CHUNK=$(chunk_id summary qwen-revision all) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/summary"
 rg -q -- '--summary-only --require-complete' "$scratch/summary"
 if rg -q -- '--judge-cache-path' "$scratch/summary"; then echo "Summary must not take a shard cache" >&2; exit 1; fi
 cp scripts/pbs/chunk.pbs "$scratch/spooled.pbs"
 (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PBS_CHUNK=2 DRY=1 bash spooled.pbs) > "$scratch/spooled-chunk"
 [[ $(rg -c '^STEP ' "$scratch/spooled-chunk") -eq 1 ]]
-rg -q '^STEP a_p0_codet5_ia3_seed42:' "$scratch/spooled-chunk"
+rg -q '^STEP a_p0_codet5_ia3_seed1:' "$scratch/spooled-chunk"
 cp scripts/pbs/bundle.pbs "$scratch/spooled.pbs"
 (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PBS_BUNDLE=5 DRY=1 bash spooled.pbs) > "$scratch/spooled-bundle"
-[[ $(rg -c '^STEP d_' "$scratch/spooled-bundle") -eq 8 ]]
+[[ $(rg -c '^STEP d_trans_review_' "$scratch/spooled-bundle") -eq 4 && $(rg -c '^STEP d_' "$scratch/spooled-bundle") -eq 4 ]]
 rg -q '^STEP gate_D:' "$scratch/spooled-bundle"
 
 mkdir "$scratch/bin"
@@ -162,16 +173,12 @@ awk -F '\t' '{n = split($2, d, ","); for (i = 1; i <= n; i++) if (d[i] + 0 >= $1
 awk -F '\t' '{n = split($2, d, ","); if (n == 0) print $1, $1; for (i = 1; i <= n; i++) print d[i], $1}' "$scratch/deps" | tsort > /dev/null
 dep_of() { awk -F '\t' -v id="$(awk -F '\t' -v l="$1" '$4 == l {print $1}' "$scratch/chunks")" '$1 == id {print $2}' "$scratch/deps"; }
 id_of() { awk -F '\t' -v l="$1" '$4 == l {print $1}' "$scratch/chunks"; }
-for pair in 'b_tr_codet5_lora_control a_p0_codet5_lora_seed42' 'b_tr_plbart_lora_control a_p0_plbart_lora_seed42' \
-            'b_tr_qwen05b_lora_control a_p0_qwen25-0.5b_lora_seed42' 'b_tr_qwen25_lora_control a_p0_qwen25_lora_seed42' \
-            'b_tr_qwen15_lora_control a_p0_qwen15_lora_seed42'; do
-    read -r control base <<< "$pair"
-    [[ -n "$(id_of "$control")" && -n "$(id_of "$base")" ]]
-    [[ ",$(dep_of "$control")," == *",$(id_of "$base"),"* ]]
-done
-for ds in trans_review acra_by_ls_pt; do
-    for lr in 0 1 2; do [[ ",$(dep_of "d_${ds}_qlora_official")," == *",$(id_of "d_${ds}_qlora_sweep_lr$lr"),"* ]]; done
-done
+# B is five TransReview DoRA runs (controls are the archived paper LoRA runs): no
+# shared run directories with A, so they wait only for the infrastructure job.
+for model in codet5 plbart qwen05b qwen25 qwen15; do [[ "$(dep_of "b_tr_${model}_dora")" == 1 ]]; done
+[[ -z "$(id_of b_tr_codet5_lora_control)" ]]
+for lr in 0 1 2; do [[ ",$(dep_of d_trans_review_qlora_official)," == *",$(id_of "d_trans_review_qlora_sweep_lr$lr"),"* ]]; done
+[[ -z "$(id_of d_acra_by_ls_pt_qlora_official)" ]]
 [[ $(awk -F '\t' '$2 == "judge" && $3 == "llama-legacy"' "$scratch/chunks" | wc -l) -eq 18 ]]
 awk -F '\t' 'NR == FNR {if ($2 == "judge" && $3 == "llama-legacy") legacy[$1] = 1; next} ($1 in legacy) && $2 != "1" {exit 1}' "$scratch/chunks" "$scratch/deps"
 # The shared BM25 index pickle is built by the first BM25 step of each dataset.
@@ -183,12 +190,15 @@ done
 # The pool previews under DRY=1 and refuses to run outside PBS; neither writes state.
 cp scripts/pbs/pool.pbs "$scratch/spooled-pool.pbs"
 (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PYTHON=/bin/false DRY=1 bash spooled-pool.pbs) > "$scratch/pool-preview"
-rg -q '^Pool preview: 267 tasks' "$scratch/pool-preview"
+rg -q '^Pool preview: 226 tasks' "$scratch/pool-preview"
 rc=0; (unset PBS_JOBID; RCG_POOL_STATE="$scratch/pool-state" bash scripts/pbs/pool.sh) > /dev/null 2>&1 || rc=$?
 [[ "$rc" -eq 2 && ! -e "$scratch/pool-state" ]]
-# Exactly these step-to-step edges: 5 shared run dirs + 6 sweep->official + 16 BM25.
+# Exactly these step-to-step edges: 3 sweep->official + 16 BM25.
 [[ $(awk -F '\t' 'NR == FNR {if ($2 == "step") step[$1] = 1; next}
     ($1 in step) {n = split($2, d, ","); for (i = 1; i <= n; i++) if (d[i] != 1) c++} END {print c + 0}' \
-    "$scratch/chunks" "$scratch/deps") -eq 27 ]]
+    "$scratch/chunks" "$scratch/deps") -eq 19 ]]
+# Seed 42 of all 18 A configurations and the 5 B controls are archived paper runs.
+[[ $(rg -c '"paper_run": "assets/models/review-code-generation/' paper/generated/seed42_paper_reuse.json) -eq 18 ]]
+[[ $(rg -c '"control_run": "assets/models/review-code-generation/' paper/generated/seed42_paper_reuse.json) -eq 5 ]]
 
-printf 'PASS: eight jobs, 267 internal tasks, acyclic pool prerequisites, 144 producer commands, spooled dispatch, dependencies/failures, scope guards and nested timed recovery\n'
+printf 'PASS: eight jobs, 226 internal tasks, acyclic pool prerequisites, 103 A100 producer commands, CR ICL subset, judge k, spooled dispatch, dependencies/failures, scope guards and nested timed recovery\n'

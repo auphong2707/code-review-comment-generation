@@ -53,11 +53,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     )
 
     from src.evaluation.metrics import configure_metric_resources
-    configure_metric_resources(device="cpu" if memory_profile else None,
-                               batch_size=1 if memory_profile else None)
+    from .memory_profile import metric_resources
+    metric_policy = metric_resources(memory_profile) or {}
+    configure_metric_resources(**metric_policy)
 
     from .recovery import (latest_recovery_checkpoint, recovery_trainer_class,
-                           attach_recovery, PredictionJournal, stop_if_requested, atomic_json, generation_identity, model_revision)
+                           attach_recovery, PredictionJournal, stop_if_requested, atomic_json, generation_identity, model_revision,
+                           defer_if_short, metric_seconds)
     recover = run_info.get("recovery", False)
     lifecycle = run_info.get("lifecycle_probe", False)
     if lifecycle:
@@ -104,10 +106,14 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     if lifecycle:
         # Dataset preparation uses fixed padded training lengths; retain enough
         # microbatches to exercise two full accumulated optimizer updates.
-        pilot_train_rows = max(8, 2 * (protocol_overrides or {}).get("gradient_accumulation_steps", 1))
+        resolved_args = {**spec["training_args"], **(protocol_overrides or {})}
+        pilot_train_rows = max(8, 2 * resolved_args["per_device_train_batch_size"]
+                               * resolved_args.get("gradient_accumulation_steps", 1))
+        # Full eval/generation batches, so the pilot peak covers batched generation.
+        pilot_eval_rows = max(2, resolved_args.get("per_device_eval_batch_size", 1), gen_batch_size)
         train_ds = train_ds.select(range(min(pilot_train_rows, len(train_ds))))
-        val_ds = val_ds.select(range(min(2, len(val_ds))))
-        test_ds = test_ds.select(range(min(2, len(test_ds))))
+        val_ds = val_ds.select(range(min(pilot_eval_rows, len(val_ds))))
+        test_ds = test_ds.select(range(min(pilot_eval_rows, len(test_ds))))
     add_tokenizer_markers(ctx, tokenizer)
 
     # ------------------------------------------------------------------
@@ -199,12 +205,6 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
             raise ValueError("No trainable parameters found! This will cause the gradient error.")
         wandb.config.update({"trainable_params": trainable_count}, allow_val_change=True)
         print(f"Trainable parameters: {trainable_count/1e6:.2f} M")
-
-    if memory_profile:
-        model.config.use_cache = False
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -299,6 +299,13 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         with torch.no_grad():
             for start in tqdm(range(0, len(test_ds), gen_batch_size),
                               desc=f"Evaluating test set (batched x{gen_batch_size})"):
+                if journal:
+                    stop_if_requested()
+                    saved = [journal.get(i) for i in range(start, min(start + gen_batch_size, len(test_ds)))]
+                    if all(row is not None for row in saved):
+                        predictions.extend(row["prediction"] for row in saved)
+                        references.extend(row["reference"] for row in saved)
+                        continue
                 rows = test_ds[start:start + gen_batch_size]
                 input_ids = torch.tensor(rows["input_ids"]).to(model.device)
                 attention_mask = (input_ids != pad_id).long()
@@ -322,8 +329,11 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
                     if len(generated_text.strip()) == 0:
                         generated_text = EMPTY_PLACEHOLDER
                     labels = [t for t in rows["labels"][i] if t != -100]
+                    reference_text = tokenizer.decode(labels, skip_special_tokens=True)
                     predictions.append(generated_text)
-                    references.append(tokenizer.decode(labels, skip_special_tokens=True))
+                    references.append(reference_text)
+                    if journal:
+                        journal.put(start + i, {"prediction": generated_text, "reference": reference_text})
 
     else:
         with torch.no_grad():
@@ -377,6 +387,7 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
     if journal:
         journal.values()  # Require full coverage before corpus metrics/final publication.
         stop_if_requested()
+        defer_if_short(metric_seconds(len(predictions), metric_policy.get("device")), "test corpus metrics")
     metrics = compute_generation_metrics(predictions, references)
 
     print(f"Test Results:")
@@ -413,7 +424,7 @@ def run(model_name, method, spec, run_info, subset=1.0, dataset_name=None,
         complete_results["resources"].update(
             memory_profile=memory_profile, lifecycle_probe=lifecycle,
             resumed_from_step=resumed_from_step, global_step=trainer.state.global_step,
-            metric_device="cpu", metric_batch_size=1,
+            metric_device=metric_policy.get("device"), metric_batch_size=metric_policy.get("batch_size"),
             train_microbatch=training_args.per_device_train_batch_size,
             eval_microbatch=training_args.per_device_eval_batch_size,
             gradient_accumulation_steps=training_args.gradient_accumulation_steps,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only completion gate for selected A5000 producer campaigns A/B/C/D.
+"""Read-only completion gate for the selected A100 producer campaigns A/B/C/D.
 
 Run lists come from the sbatch DRY JSON preview. Preserve RUN_P*/SEEDS scope when
 checking; ONLY/SKIP filters are deliberately ignored by this whole-scope gate.
@@ -87,9 +87,10 @@ def icl_result(argv):
                     num_examples=int(flags["num_examples"]),
                     selection_method=flags.get("selection_method", "random"),
                     demo_seed=int(flags["demo_seed"]) if "demo_seed" in flags else None,
-                    prompt_version="v2", memory_profile="a5000", batch_size=1,
+                    prompt_version="v2", memory_profile="a100", batch_size=int(flags["batch_size"]),
                     max_prompt_tokens=2048, attn_implementation="sdpa", seed=42,
-                    allow_exact_match=False, max_samples=None, llm_judge=False)
+                    allow_exact_match=False, max_samples=None, llm_judge=False,
+                    sample_index_file=flags.get("sample_index_file"))
     name = icl_result_filename(expected["model_name"], expected["num_examples"],
                                expected["selection_method"], demo_seed=expected["demo_seed"],
                                prompt_version="v2", non_default=True)
@@ -102,8 +103,13 @@ def icl_result(argv):
     for split in ("train", "test"):
         if identity.get(split + "_data_sha256") != digest(files[split]):
             raise ValueError(f"Input changed: {path}")
+    subset = expected["sample_index_file"]
+    if subset and identity.get("sample_index_sha256") != digest(subset):
+        raise ValueError(f"Subset file changed: {path}")
     value = validate_icl_result(path, saved["fingerprint"])
-    if value["num_test_samples"] != row_count(files["test"]):
+    rows = (len(json.loads(Path(subset).read_text())["indices"]) if subset
+            else row_count(files["test"]))
+    if value["num_test_samples"] != rows or (subset and len(value.get("sample_indices", [])) != rows):
         raise ValueError(f"Test coverage incomplete: {path}")
     return path
 
@@ -111,7 +117,7 @@ def icl_result(argv):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=SCRIPTS)
-    parser.add_argument("--results-root", default="assets/results/revision-a5000")
+    parser.add_argument("--results-root", default="assets/results/revision-a100-native")
     args = parser.parse_args(argv)
     items = commands(args.phase, Path(args.results_root).resolve())
     failures = []; paths = set()

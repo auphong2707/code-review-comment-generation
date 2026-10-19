@@ -154,8 +154,12 @@ def iter_result_rows(job: Mapping) -> Iterable[tuple[int, str, str]]:
 
     predictions = result["predictions"]
     references = result["references"]
-    for index, prediction in enumerate(predictions):
-        reference = references[index] if index < len(references) else ""
+    # Subset ICL runs (--sample-index-file) store each prediction's original test row.
+    rows = result.get("sample_indices") or range(len(predictions))
+    if len(rows) != len(predictions):
+        raise ValueError(f"{job['result']}: sample_indices do not match the predictions")
+    for position, (index, prediction) in enumerate(zip(rows, predictions)):
+        reference = references[position] if position < len(references) else ""
         yield index, prediction, reference
 
 

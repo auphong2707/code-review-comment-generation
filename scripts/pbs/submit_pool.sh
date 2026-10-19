@@ -20,7 +20,7 @@ cd "${RCG_ROOT:-$PWD}"
 [[ -f scripts/pbs/pool.pbs ]] || { echo "Run from the repository root or set RCG_ROOT" >&2; exit 2; }
 ROOT="$PWD"
 export PATH="$PATH:/opt/pbs/bin"
-STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100}/.pool}"
+STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 RECORD="$STATE/submit.env"
 # Settings that must survive into continuations/keeper submissions. Root overrides are
 # also passed to the job; the keeper's cron line must then export RCG_POOL_STATE too.

@@ -17,8 +17,8 @@ fi
 [[ -n "${PBS_JOBID:-}" || "${RCG_POOL_ALLOW_LOCAL:-0}" == 1 ]] || {
     echo "Run the pool through PBS (scripts/pbs/submit_pool.sh); DRY=1 previews" >&2; exit 2; }
 
-STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100}/.pool}"
-ADMISSIONS="${RCG_PREFLIGHT_ROOT:-$ROOT/assets/results/a100-preflight}/admissions"
+STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
+ADMISSIONS="${RCG_PREFLIGHT_ROOT:-$ROOT/assets/results/a100-native-preflight}/admissions"
 JOB="${PBS_JOBID:-local-$$}"
 LOGS="${RCG_POOL_LOG_ROOT:-$ROOT/assets/logs/a100/pool}/${JOB%%.*}"
 BUDGET="${RCG_POOL_BUDGET_GIB:-70}"          # of 80 GiB; admission policy caps a task at 76
@@ -30,7 +30,7 @@ MARGIN="${RCG_POOL_MARGIN:-1800}"            # stop launching/checkpoint this lo
 GRACE="${RCG_POOL_GRACE:-1200}"              # wait this long for tasks to commit checkpoints
 TASK_CMD="${RCG_POOL_TASK_CMD:-bash scripts/pbs/run_chunk.sh --body}"
 QSTAT="${RCG_QSTAT:-$(command -v qstat || echo /opt/pbs/bin/qstat)}"
-mkdir -p "$STATE"/{done,failed,lease,exclusive} "$LOGS"
+mkdir -p "$STATE"/{done,failed,lease,exclusive,defer} "$LOGS"
 log() { printf '%s pool %s: %s\n' "$(date '+%F %T')" "${JOB%%.*}" "$*"; }
 
 # ---- task table -----------------------------------------------------------
@@ -134,7 +134,7 @@ foreign_leases() {
 }
 
 # ---- scheduling ----------------------------------------------------------------
-declare -A PID_OF=() GPU_OF=() COST_OF=() ATTEMPT_LOG=() BLOCKED=() INCOMPLETE=() RESERVED=()
+declare -A PID_OF=() GPU_OF=() COST_OF=() ATTEMPT_LOG=() BLOCKED=() INCOMPLETE=() RESERVED=() PARKED=()
 STOP=0
 STOPPING=0     # set once shutdown starts: a killed task is incomplete, not failed
 trap 'STOP=1' USR1 TERM INT
@@ -167,7 +167,11 @@ launch() {
     log "start $id (${LABEL[$id]}) gpu=$gpu cost=${cost}GiB log=$logf"
     # Background launch keeps the task in this job; only its top shell gets USR1,
     # and common.sh forwards it to the Python worker (a group signal would kill tee).
+    # RCG_DEADLINE lets the task defer an uninterruptible stage (epoch evaluation, corpus
+    # metrics) it cannot finish before this job checkpoints; it then writes RCG_DEFER_FILE.
+    rm -f "$STATE/defer/$id"
     env CUDA_VISIBLE_DEVICES="$gpu" OMP_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
+        RCG_DEADLINE="$DEADLINE" RCG_DEFER_FILE="$STATE/defer/$id" \
         RCG_PBS_CHUNK="$id" $TASK_CMD > "$logf" 2>&1 &
     PID_OF["$id"]=$!; GPU_OF["$id"]="$gpu"; COST_OF["$id"]="$cost"; ATTEMPT_LOG["$id"]="$logf"
     GPU_FREE["$gpu"]=$(( GPU_FREE[$gpu] - cost )); GPU_TASKS["$gpu"]=$(( GPU_TASKS[$gpu] + 1 ))
@@ -180,6 +184,10 @@ finish() {
         printf '%s %s %s\n' "$JOB" "$(date +%s)" "$logf" > "$STATE/done/$id"; log "done $id"
     elif (( STOPPING )); then
         log "incomplete $id (exit $rc; resumes from its checkpoint in a later pool)"
+    elif (( rc == 75 )) && [[ -e "$STATE/defer/$id" ]]; then
+        # Not a retry: the task committed its state and needs more time than this job has.
+        PARKED["$id"]=1
+        log "deferred $id to the next pool job: $(head -c 300 "$STATE/defer/$id")"
     elif (( rc == 75 )) && (( ++INCOMPLETE[$id] < 3 )); then
         log "incomplete $id outside shutdown (exit 75, ${INCOMPLETE[$id]}x); relaunching"
     elif (( rc != 75 )) && [[ ! -e "$STATE/exclusive/$id" ]] &&
@@ -190,6 +198,7 @@ finish() {
         printf '%s %s %s\n' "$JOB" "$rc" "$logf" > "$STATE/failed/$id"
         log "FAILED $id (exit $rc); dependents blocked; see $logf"
     fi
+    rm -f "$STATE/defer/$id"
     rm -rf "$STATE/lease/$id"
 }
 reap() {
@@ -229,11 +238,13 @@ while true; do
     mark_blocked
     # Drop a hold whose task can no longer start here (finished, failed, blocked, leased).
     if [[ -n "$HOLD_ID" ]] && [[ -e "$STATE/done/$HOLD_ID" || -e "$STATE/failed/$HOLD_ID" ||
-            -n "${BLOCKED[$HOLD_ID]:-}" || -d "$STATE/lease/$HOLD_ID" ]]; then HOLD_ID=""; HOLD_GPU=""; fi
+            -n "${BLOCKED[$HOLD_ID]:-}" || -n "${PARKED[$HOLD_ID]:-}" || -d "$STATE/lease/$HOLD_ID" ]]; then
+        HOLD_ID=""; HOLD_GPU=""
+    fi
     pending=0 ready_waiting=0
     for id in "${IDS[@]}"; do
         [[ -e "$STATE/done/$id" || -e "$STATE/failed/$id" || -n "${PID_OF[$id]:-}" ]] && continue
-        [[ -n "${BLOCKED[$id]:-}" ]] && continue
+        [[ -n "${BLOCKED[$id]:-}" || -n "${PARKED[$id]:-}" ]] && continue
         pending=$((pending + 1))
         [[ -d "$STATE/lease/$id" ]] && continue
         deps_done "$id" || continue

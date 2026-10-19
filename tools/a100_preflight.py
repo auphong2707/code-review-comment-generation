@@ -20,10 +20,9 @@ from src.training.recovery import (atomic_json, file_digest, fingerprint, instal
 
 
 def hardware_policy():
-    """Keep historical standalone defaults; Slurm explicitly selects A100 80GB."""
-    target = os.environ.get("RCG_TARGET_GPU", "a5000")
-    policies = {"a5000": ("A5000", 23, 25, 22),
-                "a100_80gb": ("A100", 79, 81, 76)}
+    """The A100 80 GB policy: GPU name, capacity window (GiB) and reserved-memory limit."""
+    target = os.environ.get("RCG_TARGET_GPU", "a100_80gb")
+    policies = {"a100_80gb": ("A100", 79, 81, 76)}
     if target not in policies:
         raise ValueError(f"Unsupported RCG_TARGET_GPU: {target}")
     return policies[target]
@@ -47,7 +46,7 @@ def environment_identity():
     except (OSError, subprocess.CalledProcessError):
         driver = None
     return {"packages": packages, "python": sys.version, "cuda_build": cuda_build, "driver": driver,
-            "target_gpu": os.environ.get("RCG_TARGET_GPU", "a5000")}
+            "target_gpu": os.environ.get("RCG_TARGET_GPU", "a100_80gb")}
 
 
 def runtime_digest():
@@ -70,7 +69,7 @@ def check_report(report, digest, expected=None):
     peak = report.get("peak_reserved_gib", float("inf"))
     allocated = report.get("peak_allocated_gib", float("inf"))
     name, minimum, maximum, limit = hardware_policy()
-    capacity = report.get("total_memory_gib", 24 if name == "A5000" else 0)
+    capacity = report.get("total_memory_gib", 0)
     if (name not in report.get("hardware", "") or "MIG" in report.get("hardware", "").upper()
             or not minimum <= capacity <= maximum
             or not math.isfinite(peak) or not 0 < allocated <= peak <= limit):
@@ -96,12 +95,15 @@ def require_gpu():
 def training_probe(args, digest, hardware):
     import torch
     from src.training.registry import get_spec, resolve_run
-    root = Path(args.out_root) / "pilots" / digest[:12] / args.dataset / args.model / args.method
+    # The generation batch is part of the pilot identity: a changed GEN_BS gets a fresh pilot.
+    root = (Path(args.out_root) / "pilots" / digest[:12] / args.dataset / args.model / args.method
+            / f"gen{args.gen_batch_size}")
     _, _, spec = get_spec(args.model, args.method)
     run_dir = Path(resolve_run(spec, learning_rate=5e-5, results_root=str(root))["experiment_results_dir"])
     result_path = run_dir / "complete_results.json"
     command = [sys.executable, "-m", "src.train", "--model", args.model, "--method", args.method,
-               "--dataset", args.dataset, "--memory-profile", "a5000", "--results-root", str(root),
+               "--dataset", args.dataset, "--memory-profile", "a100", "--results-root", str(root),
+               "--gen-batch-size", str(args.gen_batch_size),
                "--lifecycle-probe", "--learning_rate", "5e-5", "--recovery-steps", "1"]
     install_stop_handlers()
     if not result_path.exists():
@@ -126,7 +128,8 @@ def training_probe(args, digest, hardware):
     peaks = lifecycle_peaks(resources, run_dir)
     peak = peaks["peak_vram_reserved_gb"]
     report = {"runtime_digest": digest, "hardware": hardware, "model": args.model,
-              "method": args.method, "dataset": args.dataset, "peak_reserved_gib": peak,
+              "method": args.method, "dataset": args.dataset, "gen_batch_size": args.gen_batch_size,
+              "peak_reserved_gib": peak,
               "peak_allocated_gib": peaks["peak_vram_allocated_gb"],
               "environment": environment_identity(),
               "total_memory_gib": torch.cuda.get_device_properties(0).total_memory / 2**30,
@@ -141,11 +144,14 @@ def main(argv=None):
     parser.add_argument("--method", required=True)
     parser.add_argument("--dataset", required=True, choices=["trans_review", "acra_by_ls_pt"])
     parser.add_argument("--out-root", required=True)
+    parser.add_argument("--gen-batch-size", type=int, default=1,
+                        help="Campaign generation batch size the pilot must cover")
     parser.add_argument("--check", action="store_true", help="Read-only admission check, no GPU imports")
     args = parser.parse_args(argv)
     digest = runtime_digest()
     path = Path(args.out_root) / "admissions" / f"train_{args.model}_{args.method}_{args.dataset}.json"
-    expected = {"model": args.model, "method": args.method, "dataset": args.dataset}
+    expected = {"model": args.model, "method": args.method, "dataset": args.dataset,
+                "gen_batch_size": args.gen_batch_size}
     if args.check:
         check_report(json.loads(path.read_text()), digest, expected)
         print(f"Qualified: {args.model}/{args.method}/{args.dataset}")

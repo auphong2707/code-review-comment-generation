@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded ICL/judge VRAM pilots. Execute only on the user-allocated server GPU."""
+"""Bounded ICL/judge VRAM pilots on the allocated A100. Execute only on the server GPU."""
 import argparse
 from contextlib import nullcontext
 import json
@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.a5000_preflight import runtime_digest, environment_identity, check_report, require_gpu, hardware_policy
+from tools.a100_preflight import runtime_digest, environment_identity, check_report, require_gpu, hardware_policy
 from src.training.recovery import atomic_json, install_stop_handlers, stop_if_requested
 
 JUDGES = {
@@ -40,7 +40,7 @@ def run_probe(args, digest):
         raise RuntimeError("Probe requires a GPU-resident model, not CPU/disk offload")
     model.eval()
     token = tokenizer.encode("code", add_special_tokens=False)[0]
-    input_ids = torch.full((1, args.max_input_tokens), token, dtype=torch.long, device=model.device)
+    input_ids = torch.full((args.batch_size, args.max_input_tokens), token, dtype=torch.long, device=model.device)
     mask = torch.ones_like(input_ids)
     kwargs = dict(max_new_tokens=output_tokens, min_new_tokens=output_tokens,
                   num_beams=beams, do_sample=args.kind == "judge",
@@ -59,7 +59,7 @@ def run_probe(args, digest):
     peak = torch.cuda.max_memory_reserved() / 2**30
     return {"runtime_digest": digest, "environment": environment_identity(), "hardware": hardware,
             "kind": args.kind, "model": args.model, "max_input_tokens": args.max_input_tokens,
-            "max_output_tokens": output_tokens, "batch_size": 1, "num_beams": beams,
+            "max_output_tokens": output_tokens, "batch_size": args.batch_size, "num_beams": beams,
             "model_revision": getattr(model.config, "_commit_hash", None),
             "peak_reserved_gib": peak, "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
             "total_memory_gib": torch.cuda.get_device_properties(0).total_memory / 2**30,
@@ -73,6 +73,8 @@ def main(argv=None):
     parser.add_argument("--model", required=True)
     parser.add_argument("--out-root", required=True)
     parser.add_argument("--max-input-tokens", type=int)
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="ICL generation batch the campaign uses (judges stay at 1)")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
     if args.kind == "icl" and args.model not in ICL_MODELS or args.kind == "judge" and args.model not in JUDGES:
@@ -81,9 +83,12 @@ def main(argv=None):
                              if args.max_input_tokens is None else args.max_input_tokens)
     if args.max_input_tokens < 1 or args.kind == "icl" and args.max_input_tokens != 2048:
         parser.error("ICL qualification uses exactly 2048 input tokens; judge budget must be positive")
+    if args.batch_size < 1 or args.kind == "judge" and args.batch_size != 1:
+        parser.error("Batch size must be positive; judges run at batch 1")
     digest = runtime_digest()
     path = Path(args.out_root) / "admissions" / f"{args.kind}_{args.model}_{args.max_input_tokens}.json"
-    expected = {"model": args.model, "kind": args.kind, "max_input_tokens": args.max_input_tokens}
+    expected = {"model": args.model, "kind": args.kind, "max_input_tokens": args.max_input_tokens,
+                "batch_size": args.batch_size}
     if args.check:
         check_report(json.loads(path.read_text()), digest, expected)
         print(f"Qualified: {args.kind}/{args.model}/{args.max_input_tokens} tokens")

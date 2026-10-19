@@ -55,10 +55,12 @@ def build_parser():
                         help="Override the GaLore optimizer variant (galore method only; e.g. "
                              "8bit_layerwise if 80 GB is exceeded — recorded via the overrides)")
     parser.add_argument("--recovery-steps", type=int, default=100,
-                        help="Optimizer steps between A5000 recovery checkpoints (default: 100)")
+                        help="Optimizer steps between memory-profile recovery checkpoints (default: 100)")
     parser.add_argument("--upload", action="store_true", help="Explicitly enable HF login/upload")
-    parser.add_argument("--memory-profile", choices=["a5000"], default=None,
-                        help="Opt-in 24 GB profile; requires an isolated --results-root and target GPU probes")
+    parser.add_argument("--memory-profile", choices=["a100"], default=None,
+                        help="Opt-in A100 80 GB profile (native protocol, batched generation, "
+                             "durable recovery); requires an isolated --results-root and target "
+                             "GPU probes")
     parser.add_argument("--gen-batch-size", dest="gen_batch_size", type=int, default=1,
                         help="Batch size for validation/test generation (1 = legacy per-sample "
                              "loops; D-028c)")
@@ -80,7 +82,7 @@ def build_parser():
     parser.add_argument("--smoke", action="store_true",
                         help="Tiny offline run: max_steps=2, capped datasets, no upload")
     parser.add_argument("--lifecycle-probe", action="store_true",
-                        help="A5000 only: two optimizer steps, validation, save/reload and test pilot")
+                        help="Memory profiles only: two optimizer steps, validation, save/reload and test pilot")
     parser.add_argument("--probe-stop-after-step", type=int, default=None,
                         help="Lifecycle probe only: simulate allocation stop after a committed step")
     parser.add_argument("--probe", action="store_true",
@@ -154,10 +156,10 @@ def main(argv=None):
             args.seed = None  # effective default seed shares the canonical output name
         if not args.results_root and not args.probe:
             raise SystemExit("--memory-profile requires an isolated --results-root")
-        if args.gen_batch_size != 1:
-            raise SystemExit("A5000 profile requires --gen-batch-size 1")
+        if args.gen_batch_size < 1:
+            raise SystemExit("--gen-batch-size must be positive")
         if args.attn_implementation not in (None, "sdpa"):
-            raise SystemExit("A5000 profile requires SDPA")
+            raise SystemExit("The A100 profile requires SDPA")
         args.attn_implementation = "sdpa"
         from src.training.memory_profile import apply_memory_profile
         spec, profile_overrides = apply_memory_profile(
@@ -203,7 +205,7 @@ def main(argv=None):
             identity = recovery_identity(spec, profile_overrides, args, run_info)
             if not (run_dir / "run_identity.json").exists() and (
                     (run_dir / "complete_results.json").exists() or list(run_dir.glob("checkpoint-*"))):
-                raise SystemExit("Refusing to adopt existing results/checkpoints without A5000 identity")
+                raise SystemExit("Refusing to adopt existing results/checkpoints without a profile identity")
             run_info["fingerprint"] = bind_identity(run_dir / "run_identity.json", identity)
             run_info["recovery"] = True
             install_stop_handlers()

@@ -14,30 +14,19 @@
 RCG_PHASE=13
 source "${RCG_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/slurm/common.sh"
 # GaLore is unavailable until a separately qualified full-state/offload path exists.
-# DoRA always gets a matching LoRA control at the identical LR and protocol.
-RUN_P0="${RUN_P0:-0}"; RUN_P1="${RUN_P1:-1}"; RUN_P2="${RUN_P2:-0}"
+# DoRA runs on TransReview only, at the LR of the paper's LoRA run for the same model;
+# that archived LoRA run is its control (paper/generated/seed42_paper_reuse.json).
+RUN_P0="${RUN_P0:-0}"; RUN_P1="${RUN_P1:-1}"
 if [[ "$RUN_P0" == 1 || "${RUN_GALORE:-0}" == 1 ]]; then
     echo "GaLore is outside this profile: optimizer accumulation/resume requires separate validation." >&2
     exit 2
 fi
-paired_run() {
-    local label="$1" dataset="$2" model="$3" lr="$4"
-    train_official "${label}_lora_control" "$dataset" "$model" lora "$lr" --seed 42
-    train_official "${label}_dora" "$dataset" "$model" dora "$lr" --seed 42
-}
 if [[ "$RUN_P1" == 1 ]]; then
-    paired_run b_tr_codet5 trans_review codet5 0.001
-    paired_run b_tr_plbart trans_review plbart 1e-05
-    paired_run b_tr_qwen05b trans_review qwen25-0.5b 0.0005
-    paired_run b_cr_codet5 acra_by_ls_pt codet5 0.001
-    paired_run b_cr_plbart acra_by_ls_pt plbart 0.001
-    paired_run b_cr_qwen05b acra_by_ls_pt qwen25-0.5b 5e-05
-    paired_run b_tr_qwen25 trans_review qwen25 5e-05
-    paired_run b_tr_qwen15 trans_review qwen15 5e-05
-fi
-if [[ "$RUN_P2" == 1 ]]; then
-    paired_run b_cr_qwen25 acra_by_ls_pt qwen25 1e-05
-    paired_run b_cr_qwen15 acra_by_ls_pt qwen15 0.0005
+    train_official b_tr_codet5_dora trans_review codet5 dora 0.001
+    train_official b_tr_plbart_dora trans_review plbart dora 1e-05
+    train_official b_tr_qwen05b_dora trans_review qwen25-0.5b dora 0.0005
+    train_official b_tr_qwen25_dora trans_review qwen25 dora 5e-05
+    train_official b_tr_qwen15_dora trans_review qwen15 dora 5e-05
 fi
 echo "UNAVAILABLE: GaLore sweeps/officials/seeds, including optional qwen15; no full-FT result is claimed."
 

@@ -38,7 +38,7 @@ output_key() {
     printf '%s|%s|%s|%s|%s|%s|%s' "$root" "$model" "$method" "$lr" "$seed" "$exp" "$subset"
 }
 
-# Pilot report names written by tools/a5000_preflight.py and a5000_inference_probe.py.
+# Pilot report names written by tools/a100_preflight.py and a100_inference_probe.py.
 admission_name() {
     local -a words; read -ra words <<< "$1"
     local model="" method="" dataset="" i

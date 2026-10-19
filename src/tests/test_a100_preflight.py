@@ -1,25 +1,25 @@
 import pytest
-from tools.a5000_preflight import check_report
+from tools.a100_preflight import check_report
 
 
 def test_admission_rejects_stale_wrong_or_excess_memory(monkeypatch):
-    monkeypatch.setenv("RCG_TARGET_GPU", "a5000")
-    valid = {"runtime_digest": "current", "admitted": True, "hardware": "NVIDIA RTX A5000",
-             "peak_reserved_gib": 21, "peak_allocated_gib": 20,
-             "model": "qwen25", "method": "lora", "dataset": "trans_review"}
-    expected = {"model": "qwen25", "method": "lora", "dataset": "trans_review"}
+    monkeypatch.setenv("RCG_TARGET_GPU", "a100_80gb")
+    valid = {"runtime_digest": "current", "admitted": True, "hardware": "NVIDIA A100-SXM4-80GB",
+             "total_memory_gib": 79.15, "peak_reserved_gib": 60, "peak_allocated_gib": 59,
+             "model": "qwen25", "method": "lora", "dataset": "trans_review", "gen_batch_size": 16}
+    expected = {"model": "qwen25", "method": "lora", "dataset": "trans_review", "gen_batch_size": 16}
     assert check_report(valid, "current", expected) is valid
     for change in ({"runtime_digest": "old"}, {"admitted": False},
-                   {"peak_reserved_gib": 23}, {"peak_reserved_gib": float("nan")},
-                   {"hardware": "NVIDIA H100"}, {"peak_allocated_gib": 22},
-                   {"method": "qlora"}):
+                   {"peak_reserved_gib": 77}, {"peak_reserved_gib": float("nan")},
+                   {"hardware": "NVIDIA H100"}, {"peak_allocated_gib": 61},
+                   {"method": "qlora"}, {"gen_batch_size": 8}):
         with pytest.raises(ValueError):
             check_report({**valid, **change}, "current", expected)
 
 
 def test_peak_in_interrupted_process_is_retained(tmp_path):
     import json
-    from tools.a5000_preflight import lifecycle_peaks
+    from tools.a100_preflight import lifecycle_peaks
     checkpoint = tmp_path / "checkpoint-1"
     checkpoint.mkdir()
     (checkpoint / "recovery_complete.json").write_text(json.dumps({
@@ -45,7 +45,7 @@ def test_a100_admission_requires_full_capacity_and_matching_target(monkeypatch):
     without_capacity = {key: value for key, value in valid.items() if key != "total_memory_gib"}
     with pytest.raises(ValueError):
         check_report(without_capacity, "current")
-    monkeypatch.setenv("RCG_TARGET_GPU", "a5000")
+    monkeypatch.setenv("RCG_TARGET_GPU", "unsupported")
     with pytest.raises(ValueError):
         check_report(valid, "current")
 
@@ -61,7 +61,7 @@ def test_a100_admission_requires_full_capacity_and_matching_target(monkeypatch):
 def test_allocated_gpu_policy_without_cuda(monkeypatch, name, capacity, count, accepted):
     import sys
     from types import SimpleNamespace
-    from tools.a5000_preflight import require_gpu
+    from tools.a100_preflight import require_gpu
     monkeypatch.setenv("RCG_TARGET_GPU", "a100_80gb")
     cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: count,
                            get_device_properties=lambda _: SimpleNamespace(
