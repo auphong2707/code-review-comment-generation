@@ -41,7 +41,8 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
     done
     for model in qwen-judge llama-judge; do
         run_step "probe_$model" "$PYTHON" tools/a100_inference_probe.py --kind judge \
-            --model "$model" --max-input-tokens "${JUDGE_MAX_INPUT_TOKENS:-4096}" --out-root "$PREFLIGHT_ROOT"
+            --model "$model" --max-input-tokens "${JUDGE_MAX_INPUT_TOKENS:-4096}" \
+            --batch-size "$JUDGE_BS" --out-root "$PREFLIGHT_ROOT"
     done
     # Synthetic pilots alone cannot check dataset parsing, retrieval, metrics or
     # judge input/cache/output plumbing. Exercise those paths on bounded rows.
@@ -59,7 +60,7 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
     run_step smoke_qwen_pipeline "$PYTHON" tools/update_llm_judge_tables.py \
         --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/qwen-smoke" \
         --judge-model-path assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct \
-        --judge-local-files-only --judge-device cuda --judge-k 3 --judge-batch-size 1 \
+        --judge-local-files-only --judge-device cuda --judge-k 1 --judge-batch-size "$JUDGE_BS" \
         --judge-input-token-limit "${JUDGE_MAX_INPUT_TOKENS:-4096}"
     run_step smoke_llama_pipeline "$PYTHON" tools/update_llm_judge_tables.py \
         --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/llama-smoke" \
@@ -67,7 +68,7 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
         --sample-index-file paper/generated/cr_judge_subset.json \
         --backend hf-chat --column-prefix llama_judge_ \
         --judge-model-path assets/models/llm-judge/Llama-3.1-8B-Instruct \
-        --judge-local-files-only --judge-device cuda --judge-k 3 --judge-batch-size 1 \
+        --judge-local-files-only --judge-device cuda --judge-k 1 --judge-batch-size "$JUDGE_BS" \
         --judge-top-k 20 --judge-repetition-penalty 1.05 --judge-seed 42 \
         --judge-input-token-limit "${JUDGE_MAX_INPUT_TOKENS:-4096}"
 else

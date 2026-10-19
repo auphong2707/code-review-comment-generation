@@ -19,14 +19,14 @@ JUDGE_ROOT="${RCG_JUDGE_ROOT:-$ROOT_DIR/assets/results/a100-native-judges}"
 JOBS_FILE="$JUDGE_ROOT/jobs_revision.json"
 SUBSET=paper/generated/cr_judge_subset.json
 TOKEN_LIMIT="${JUDGE_MAX_INPUT_TOKENS:-4096}"
-# New (revision) outputs are judged once per judge; the legacy Llama pass over the frozen
-# paper outputs keeps k=3. k is not part of the judge cache key.
+# Every pass scores each row once (k=1, legacy Llama pass included) in batches of
+# JUDGE_BS rows. Neither k nor the batch size is part of the judge cache key.
 QWEN_ARGS=(--judge-model-path assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct
-            --judge-local-files-only --judge-device cuda --judge-k 1 --judge-batch-size 1
+            --judge-local-files-only --judge-device cuda --judge-k 1 --judge-batch-size "$JUDGE_BS"
             --judge-input-token-limit "$TOKEN_LIMIT")
 LLAMA_ARGS=(--backend hf-chat --judge-model-path assets/models/llm-judge/Llama-3.1-8B-Instruct
              --judge-local-files-only --judge-device cuda --column-prefix llama_judge_
-             --judge-batch-size 1 --judge-input-token-limit "$TOKEN_LIMIT"
+             --judge-k 1 --judge-batch-size "$JUDGE_BS" --judge-input-token-limit "$TOKEN_LIMIT"
              --judge-top-k 20 --judge-repetition-penalty 1.05 --judge-seed 42)
 if [[ "$RUN_REVISION" == 1 ]]; then
     # Explicitly selecting fewer prerequisites means a partial judge pass.
@@ -37,22 +37,22 @@ if [[ "$RUN_REVISION" == 1 ]]; then
 fi
 if [[ "$RUN_QWEN" == 1 && "$RUN_REVISION" == 1 ]]; then
     run_step j_qualify_qwen "$PYTHON" tools/a100_inference_probe.py --kind judge --model qwen-judge \
-        --max-input-tokens "$TOKEN_LIMIT" --out-root "$PREFLIGHT_ROOT" --check
+        --max-input-tokens "$TOKEN_LIMIT" --batch-size "$JUDGE_BS" --out-root "$PREFLIGHT_ROOT" --check
     run_step j_qwen_revision "$PYTHON" tools/update_llm_judge_tables.py \
         --jobs-file "$JOBS_FILE" --out-root "$JUDGE_ROOT/qwen-revision" "${QWEN_ARGS[@]}"
 fi
 if [[ "$RUN_LLAMA" == 1 ]]; then
     run_step j_qualify_llama "$PYTHON" tools/a100_inference_probe.py --kind judge --model llama-judge \
-        --max-input-tokens "$TOKEN_LIMIT" --out-root "$PREFLIGHT_ROOT" --check
+        --max-input-tokens "$TOKEN_LIMIT" --batch-size "$JUDGE_BS" --out-root "$PREFLIGHT_ROOT" --check
     if [[ "$RUN_LEGACY" == 1 ]]; then
         run_step j_llama_legacy "$PYTHON" tools/update_llm_judge_tables.py \
             --reuse-inputs assets/models/llm-as-judge/table-results/inputs --sample-index-file "$SUBSET" \
-            --out-root "$JUDGE_ROOT/llama-legacy" --judge-k 3 "${LLAMA_ARGS[@]}"
+            --out-root "$JUDGE_ROOT/llama-legacy" "${LLAMA_ARGS[@]}"
     fi
     if [[ "$RUN_REVISION" == 1 ]]; then
         run_step j_llama_revision "$PYTHON" tools/update_llm_judge_tables.py \
             --jobs-file "$JOBS_FILE" --sample-index-file "$SUBSET" \
-            --out-root "$JUDGE_ROOT/llama-revision" --judge-k 1 "${LLAMA_ARGS[@]}"
+            --out-root "$JUDGE_ROOT/llama-revision" "${LLAMA_ARGS[@]}"
     fi
 fi
 

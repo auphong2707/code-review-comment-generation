@@ -32,7 +32,7 @@ bash scripts/pbs/chunks.sh | awk -F '\t' -v state="$STATE" -v now="$now" '
             split(line, b, " "); printf "FAILED %s %s exit %s log %s\n", id, bad[id], b[2], b[3]
         }
     }'
-[[ ! -f "$STATE/unstarted" ]] || echo "submitted, script not started yet: $(cat "$STATE/unstarted")"
+[[ -z "$(ls -A "$STATE/unstarted.d" 2>/dev/null)" ]] || echo "submitted, script not started yet: $(ls "$STATE/unstarted.d" | tr '\n' ' ')"
 [[ ! -f "$STATE/last_exit" ]] || echo "last pool exit: $(cat "$STATE/last_exit") (0 complete, 75 continuing, 1 blocked)"
 command -v qselect >/dev/null && echo "pool jobs: $(qselect -u "${USER:-$(id -un)}" -N rcg_pool -s QRHW 2>/dev/null | tr '\n' ' ')"
 true

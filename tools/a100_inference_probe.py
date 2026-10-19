@@ -30,7 +30,7 @@ def run_probe(args, digest):
     else:
         from src.llm_as_judge.config import JudgeConfig
         from src.llm_as_judge.qwen_judge import make_judge
-        judge = make_judge(JudgeConfig(model_path=JUDGES[args.model], k=3, batch_size=1,
+        judge = make_judge(JudgeConfig(model_path=JUDGES[args.model], k=1, batch_size=args.batch_size,
                           backend="qwen" if args.model == "qwen-judge" else "hf-chat",
                           local_files_only=True, input_token_limit=args.max_input_tokens))
         judge._load()
@@ -74,7 +74,7 @@ def main(argv=None):
     parser.add_argument("--out-root", required=True)
     parser.add_argument("--max-input-tokens", type=int)
     parser.add_argument("--batch-size", type=int, default=1,
-                        help="ICL generation batch the campaign uses (judges stay at 1)")
+                        help="Generation batch the campaign uses (ICL rows or judge rows per call)")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
     if args.kind == "icl" and args.model not in ICL_MODELS or args.kind == "judge" and args.model not in JUDGES:
@@ -83,8 +83,8 @@ def main(argv=None):
                              if args.max_input_tokens is None else args.max_input_tokens)
     if args.max_input_tokens < 1 or args.kind == "icl" and args.max_input_tokens != 2048:
         parser.error("ICL qualification uses exactly 2048 input tokens; judge budget must be positive")
-    if args.batch_size < 1 or args.kind == "judge" and args.batch_size != 1:
-        parser.error("Batch size must be positive; judges run at batch 1")
+    if args.batch_size < 1:
+        parser.error("Batch size must be positive")
     digest = runtime_digest()
     path = Path(args.out_root) / "admissions" / f"{args.kind}_{args.model}_{args.max_input_tokens}.json"
     expected = {"model": args.model, "kind": args.kind, "max_input_tokens": args.max_input_tokens,

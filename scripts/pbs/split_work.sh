@@ -16,15 +16,14 @@ case "$RCG_CHUNK_KIND" in
         run_step j_build_jobs "$PYTHON" tools/revision_judge_jobs.py --results-root "$REVISION_ROOT" --out "$JOBS_FILE"
         for model in qwen-judge llama-judge; do
             run_step "j_qualify_$model" "$PYTHON" tools/a100_inference_probe.py --kind judge --model "$model" \
-                --max-input-tokens "$TOKEN_LIMIT" --out-root "$PREFLIGHT_ROOT" --check
+                --max-input-tokens "$TOKEN_LIMIT" --batch-size "$JUDGE_BS" --out-root "$PREFLIGHT_ROOT" --check
         done
         ;;
     judge|summary)
-        # New (revision) outputs are judged once per judge; the legacy pass over the frozen
-        # paper outputs keeps k=3. k is not part of the cache key.
-        k=1; [[ "$RCG_CHUNK_PHASE" != llama-legacy ]] || k=3
+        # Every pass scores each row once (k=1, including the legacy Llama pass) in batches
+        # of JUDGE_BS rows. Neither k nor the batch size is part of the cache key.
         args=(--out-root "$JUDGE_ROOT/$RCG_CHUNK_PHASE" --judge-local-files-only --judge-device cuda
-              --judge-k "$k" --judge-batch-size 1 --judge-input-token-limit "$TOKEN_LIMIT")
+              --judge-k 1 --judge-batch-size "$JUDGE_BS" --judge-input-token-limit "$TOKEN_LIMIT")
         count=48
         case "$RCG_CHUNK_PHASE" in
             qwen-revision)

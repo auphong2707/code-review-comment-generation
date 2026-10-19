@@ -36,7 +36,7 @@ the only A100 node is `aimc-gna1` (8 × A100 80 GB, shared). The pool runs all
 # login node, repository root, rcg-a100 environment prepared (SERVER_SETUP.md)
 export RCG_PYTHON=/scratch/congthanh_le/conda/envs/rcg-a100/bin/python
 bash scripts/pbs/submit_pool.sh --preview          # print the qsub command
-bash scripts/pbs/submit_pool.sh --gpus 2           # queue the pool (1..4 GPUs)
+bash scripts/pbs/submit_pool.sh --gpus 2 --jobs 2  # up to two 2-GPU pool jobs (4 running GPUs)
 crontab -e   # add once (keeper fallback):
 # */30 * * * * bash /home/users/congthanh_le/JSS/code-review-comment-generation/scripts/pbs/pool_keeper.sh >> /home/users/congthanh_le/JSS/code-review-comment-generation/assets/logs/a100/pool/keeper.log 2>&1
 bash scripts/pbs/pool_status.sh                    # progress, running tasks, failures
@@ -101,8 +101,8 @@ Bash campaign previews; `run_bundle.sh` groups them without changing their order
 or scientific scope. All D sweep results must exist before selecting an official
 LR. Whole-campaign gates verify completed outputs and configuration/input identity.
 
-Judge groups retain whole artifacts, every row, k (1 for revision outputs, 3 for the
-legacy pass), scored filenames, cache keys
+Judge groups retain whole artifacts, every row, k=1 (all passes), 16 rows per judge call
+(`JUDGE_BS`), scored filenames, cache keys
 and the existing three output roots. Partial manifests/summaries have unique names;
 each final summary verifies scored coverage and input identity before writing its
 canonical `summary.csv`. In this layout all work is serial; the pool above instead

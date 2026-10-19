@@ -9,10 +9,13 @@ PYTHON="${RCG_PYTHON:-python}"
 export RCG_TARGET_GPU="${RCG_TARGET_GPU:-a100_80gb}"
 REVISION_ROOT="${RCG_RESULTS_ROOT:-$ROOT_DIR/assets/results/revision-a100-native}"
 PREFLIGHT_ROOT="${RCG_PREFLIGHT_ROOT:-$ROOT_DIR/assets/results/a100-native-preflight}"
-# A100 profile generation batches: training validation/test generation (GEN_BS) and ICL
-# (ICL_BS, 2,048-token prompts). Smaller for CodeQwen1.5 (full multi-head KV cache).
-declare -A GEN_BS=([codet5]=32 [plbart]=32 [qwen25-0.5b]=32 [qwen25]=16 [qwen15]=8 [qwen25-14b]=8)
-declare -A ICL_BS=([qwen25-0.5b]=16 [qwen25]=8 [qwen15]=4)
+# A100 profile generation batches: training validation/test generation (GEN_BS), ICL
+# (ICL_BS, 2,048-token prompts) and judges (JUDGE_BS rows per call), sized from the
+# measured pilot peaks. Smaller for CodeQwen1.5 (full multi-head KV cache). A run's
+# batch is part of its identity: never change it for a model whose runs have started.
+declare -A GEN_BS=([codet5]=32 [plbart]=32 [qwen25-0.5b]=64 [qwen25]=16 [qwen15]=8 [qwen25-14b]=16)
+declare -A ICL_BS=([qwen25-0.5b]=64 [qwen25]=16 [qwen15]=8)
+JUDGE_BS=16
 CR_SUBSET="paper/generated/cr_judge_subset.json"
 JOB_TAG="${RCG_PHASE:-${PBS_JOBNAME:-${SLURM_JOB_NAME:-local}}}"
 LOG_ROOT="${RCG_LOG_ROOT:-$ROOT_DIR/assets/logs/a100}/$JOB_TAG"

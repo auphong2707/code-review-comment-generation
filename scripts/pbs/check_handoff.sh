@@ -56,7 +56,8 @@ rg -q -- '--judge-k 1 ' "$scratch/judge"
 RCG_PBS_CHUNK=$(chunk_id judge llama-revision 0) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/llama-judge"
 rg -q -- '--judge-k 1 ' "$scratch/llama-judge"
 RCG_PBS_CHUNK=$(chunk_id judge llama-legacy 0) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/legacy-judge"
-rg -q -- '--judge-k 3 ' "$scratch/legacy-judge"
+rg -q -- '--judge-k 1 ' "$scratch/legacy-judge"
+for pass in judge llama-judge legacy-judge; do rg -q -- '--judge-batch-size 16 ' "$scratch/$pass"; done
 RCG_PBS_CHUNK=$(chunk_id summary qwen-revision all) DRY=1 bash scripts/pbs/chunk.pbs > "$scratch/summary"
 rg -q -- '--summary-only --require-complete' "$scratch/summary"
 if rg -q -- '--judge-cache-path' "$scratch/summary"; then echo "Summary must not take a shard cache" >&2; exit 1; fi
