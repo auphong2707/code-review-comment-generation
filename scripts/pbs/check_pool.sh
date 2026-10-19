@@ -260,6 +260,8 @@ call=$(cat "$scratch/qsub-calls")
 [[ "$call" == *" -j oe -v "*" -- /bin/bash $ROOT/scripts/pbs/pool.pbs" ]] || fail "command-form submission: $call"
 [[ "$(cat "$scratch/state/unstarted")" == 777.fake ]] || fail "submission must mark the job unstarted"
 grep -qx 'POOL_GPUS=3' "$scratch/state/submit.env" || fail "submission not recorded"
+RCG_PYTHON=/bin/true bash scripts/pbs/submit_pool.sh --gpus 2 --ncpus 8 --preview | grep -q -- "select=1:ncpus=8:ngpus=2:mem=128gb" || fail "--ncpus not applied"
+[[ $(RCG_PYTHON=/bin/true submit --ncpus 0) == 2 ]] || fail "--ncpus 0 accepted"
 
 # 8. A pool that stops at walltime queues its continuation with the recorded settings;
 #    a refused qsub is retried three times and then left to the keeper.

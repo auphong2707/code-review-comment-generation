@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Submit one parallel pool job (scripts/pbs/pool.pbs). Used by the user (first start),
 # by a finishing pool and by pool_keeper.sh (both --continue: keep the error count, retry).
-#   bash scripts/pbs/submit_pool.sh [--gpus 1..4] [--preview] [--continue]
+#   bash scripts/pbs/submit_pool.sh [--gpus 1..4] [--ncpus N] [--preview] [--continue]
 # The environment is passed explicitly with -v and recorded in the pool state so the
 # keeper (cron, minimal environment) and continuations reuse it; -V is never used.
 # Stop the whole campaign with `touch <state>/stop` (the running pool drains, nothing is
 # resubmitted); remove that file and run this script again to resume.
 set -euo pipefail
-mode=submit; gpus=""; continuing=0
+mode=submit; gpus=""; ncpus=""; continuing=0
 while (( $# )); do
     case "$1" in
         --gpus) [[ $# -ge 2 ]] || { echo "Missing value for --gpus" >&2; exit 2; }; gpus="$2"; shift 2 ;;
+        --ncpus) [[ $# -ge 2 ]] || { echo "Missing value for --ncpus" >&2; exit 2; }; ncpus="$2"; shift 2 ;;
         --preview) mode=preview; shift ;;
         --continue) continuing=1; shift ;;
-        *) echo "Usage: $0 [--gpus 1..4] [--preview] [--continue]" >&2; exit 2 ;;
+        *) echo "Usage: $0 [--gpus 1..4] [--ncpus N] [--preview] [--continue]" >&2; exit 2 ;;
     esac
 done
 cd "${RCG_ROOT:-$PWD}"
@@ -24,7 +25,7 @@ STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-
 RECORD="$STATE/submit.env"
 # Settings that must survive into continuations/keeper submissions. Root overrides are
 # also passed to the job; the keeper's cron line must then export RCG_POOL_STATE too.
-RECORDED=(RCG_PYTHON HF_HOME NLTK_DATA POOL_GPUS RCG_PBS_WALLTIME RCG_PBS_QUEUE RCG_PBS_PROJECT
+RECORDED=(RCG_PYTHON HF_HOME NLTK_DATA POOL_GPUS POOL_NCPUS RCG_PBS_WALLTIME RCG_PBS_QUEUE RCG_PBS_PROJECT
           RCG_RESULTS_ROOT RCG_PREFLIGHT_ROOT RCG_POOL_STATE RCG_LOG_ROOT RCG_JUDGE_ROOT)
 PASSED_ROOTS=(RCG_RESULTS_ROOT RCG_PREFLIGHT_ROOT RCG_POOL_STATE RCG_LOG_ROOT RCG_JUDGE_ROOT)
 
@@ -41,6 +42,11 @@ if [[ -f "$RECORD" ]]; then
 fi
 gpus="${gpus:-${POOL_GPUS:-2}}"
 [[ "$gpus" =~ ^[1-4]$ ]] || { echo "--gpus must be 1..4 (account cap: 4 running GPUs)" >&2; exit 2; }
+# CPUs default to 8 per GPU; fewer lets the job start on a busy node (results unchanged:
+# the pool sizes each task's thread count from the allocation).
+ncpus="${ncpus:-${POOL_NCPUS:-$((8 * gpus))}}"
+[[ "$ncpus" =~ ^[1-9][0-9]?$ ]] || { echo "--ncpus must be 1..99" >&2; exit 2; }
+POOL_NCPUS="$ncpus"
 RCG_PYTHON="${RCG_PYTHON:-}"
 [[ -n "$RCG_PYTHON" && "$RCG_PYTHON" == /* ]] || { echo "Set RCG_PYTHON to the absolute rcg-a100 python" >&2; exit 2; }
 [[ "$mode" == preview || -x "$RCG_PYTHON" ]] || { echo "RCG_PYTHON is not executable: $RCG_PYTHON" >&2; exit 2; }
@@ -65,7 +71,7 @@ source scripts/pbs/check_judge_inputs.sh
 # script exits 126 "Permission denied". #PBS lines are not read in this form, so every
 # directive is given here.
 command_args=(qsub -N rcg_pool -q "$RCG_PBS_QUEUE" -P "$RCG_PBS_PROJECT"
-    -l "select=1:ncpus=$((8 * gpus)):ngpus=$gpus:mem=$((64 * gpus))gb" -l "walltime=$RCG_PBS_WALLTIME"
+    -l "select=1:ncpus=$ncpus:ngpus=$gpus:mem=$((64 * gpus))gb" -l "walltime=$RCG_PBS_WALLTIME"
     -j oe -v "$passed" -- /bin/bash "$ROOT/scripts/pbs/pool.pbs")
 if [[ "$mode" == preview ]]; then printf '%q ' "${command_args[@]}"; printf '\n'; exit 0; fi
 
