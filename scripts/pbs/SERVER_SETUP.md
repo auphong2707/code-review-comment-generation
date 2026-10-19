@@ -163,7 +163,7 @@ python -m nltk.downloader -d "$NLTK_DATA" wordnet omw-1.4 punkt punkt_tab
 
 ## Return revision outputs through Hugging Face
 
-Revision outputs (`assets/results/{revision-a100,a100-preflight,a100-judges}`,
+Revision outputs (`assets/results/{revision-a100-native,a100-native-preflight,a100-native-judges}`,
 `assets/logs/{a100,pbs}` and PBS `rcg_*.o*` files) travel through the private
 dataset repo named by `HF_REPO_ID` in `.env`, not rsync. After jobs finish, submit
 the CPU-only upload job from the repository root on the login node:
@@ -182,7 +182,7 @@ Then on Ubuntu (needs `.venv/bin/pip install "huggingface-hub==0.34.3"` once):
 
 ```bash
 bash assets/hf_pull_to_local.sh                                 # everything
-bash assets/hf_pull_to_local.sh 'assets/results/revision-a100/*' # or a subset
+bash assets/hf_pull_to_local.sh 'assets/results/revision-a100-native/*' # or a subset
 ```
 
 Files land at the same paths in the local checkout. Free accounts have a private

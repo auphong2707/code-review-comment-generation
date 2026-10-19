@@ -66,13 +66,22 @@ Judge inputs over `JUDGE_MAX_INPUT_TOKENS` fail explicitly; increase that limit 
 after rerunning matching judge pilots. `RCG_PROBES=0` or filtered execution exits
 75 in real jobs, so an incomplete smoke cannot satisfy an `afterok` dependency.
 
-## Research scope and conservative settings
+## Research scope and the A100 profile
 
-The historical CLI name `--memory-profile a5000` is retained as the numerical and
-recovery policy: microbatch 1, effective batch preserved by accumulation, generation
-batch 1, SDPA, checkpointing, CPU BERTScore and durable progress. The Slurm hardware
-target is independently `RCG_TARGET_GPU=a100_80gb`. This intentionally preserves
-the retained research comparisons; it does not tune throughput to fill 80GB.
+Every producer runs `--memory-profile a100`: the native training protocol of the frozen
+specs (batch sizes as in the paper runs, no accumulation rewrite, gradient checkpointing
+only where the spec enables it), batched validation/test generation (`GEN_BS` in
+`common.sh`) and ICL (`ICL_BS`), SDPA, BERTScore on the GPU, and durable progress
+(full-state checkpoints every 100 steps, test predictions journaled as they are
+generated). The hardware target is `RCG_TARGET_GPU=a100_80gb`. Under the PBS pool a task
+that cannot finish an epoch evaluation or its corpus metrics before the allocation
+ends checkpoints first and resumes in the next job.
+
+Scope (D-049): A trains seeds 1 and 2 of the 18 TransReview configurations (7B: LoRA
+only); seed 42 is the archived paper run. B is five TransReview DoRA runs whose
+controls are the paper LoRA runs (`paper/generated/seed42_paper_reuse.json`). C runs
+CodeReviewer ICL on the fixed 2,000-row subset (`--sample-index-file`). D trains 14B
+QLoRA on TransReview only. Revision outputs are judged once per judge (`--judge-k 1`).
 
 The existing excluded scope stays excluded: 7B FMFT (missing DeepSpeed config),
 GaLore (unqualified optimizer/recovery path), ordinary 14B LoRA and 14B ICL
@@ -111,15 +120,14 @@ An incomplete LR bracket cannot select an official LR; failed commands stop the 
 
 | Variable | Default |
 |---|---|
-| `RCG_RESULTS_ROOT` | `assets/results/revision-a100` |
-| `RCG_PREFLIGHT_ROOT` | `assets/results/a100-preflight` |
-| `RCG_JUDGE_ROOT` | `assets/results/a100-judges` |
+| `RCG_RESULTS_ROOT` | `assets/results/revision-a100-native` |
+| `RCG_PREFLIGHT_ROOT` | `assets/results/a100-native-preflight` |
+| `RCG_JUDGE_ROOT` | `assets/results/a100-native-judges` |
 | `RCG_LOG_ROOT` | `assets/logs/a100` (per-phase directories) |
 | `JUDGE_MAX_INPUT_TOKENS` | 4096 |
-| `CR_EVAL_MAX` | 2000 validation rows for D's CR official |
 | `WANDB_MODE` | offline |
 
-Use separate roots from A5000 runs and frozen inputs. Training leaf names and
+Use separate roots from earlier runs and frozen inputs. Training leaf names and
 result/judge schemas are unchanged. Judge roots remain separate by backend and
 legacy/revision input set. Slurm logs go to `assets/logs/slurm`; create it before
 individual sbatch submissions (the launcher creates it for actual submission).
@@ -128,15 +136,14 @@ J checks A/B/C/D by default. Server-only completion command:
 
 ```bash
 RCG_TARGET_GPU=a100_80gb "$RCG_PYTHON" tools/campaign_status.py A \
-  --results-root assets/results/revision-a100
+  --results-root assets/results/revision-a100-native
 ```
 
-For optional producer scopes, set `RCG_A_RUN_P1=1 RCG_B_RUN_P2=1 RCG_C_RUN_P2=1`
+For optional producer scopes, set `RCG_A_RUN_P1=1 RCG_C_RUN_P2=1`
 on J's individual submission; producer jobs themselves use their own `RUN_P*`.
 Do not apply global `RUN_P2=1` to D. `J_REQUIRE_PHASES='A B C'` requests a partial
 judge pass and cannot claim D complete. `RUN_REVISION=0` selects legacy-only judging;
 `RUN_QWEN`, `RUN_LLAMA`, `RUN_LEGACY` control the passes (default all on).
 
-[BUDGET.md](BUDGET.md) preserves historical A5000 timing assumptions. Those numbers
-are not an A100 estimate. Calibrate elapsed training, generation, metrics and
-checkpoint times on the server before estimating the new campaign duration.
+Calibrate elapsed training, generation, metrics and checkpoint times on the server
+before estimating the campaign duration.
