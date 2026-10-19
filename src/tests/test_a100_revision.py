@@ -153,3 +153,24 @@ def test_gate_c_accepts_a_bound_subset_run(tmp_path, monkeypatch):
     path.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="coverage"):
         status.icl_result(argv)
+
+
+def test_batched_validation_pads_on_the_prompt_device():
+    """The Trainer's eval dataloader yields prompts on the GPU; padding must follow them
+    (a CPU pad tensor made the first A100 pilot fail). `meta` stands in for CUDA here."""
+    import torch
+    from src.utils.custom_modified_api import LLMCustomTrainer
+    seen = {}
+
+    def generate(input_ids, attention_mask, **kwargs):
+        seen.update(device=input_ids.device, shape=tuple(input_ids.shape))
+        return torch.cat([input_ids, input_ids[:, :1]], dim=1)
+
+    stub = SimpleNamespace(
+        tokenizer_gen=SimpleNamespace(pad_token_id=0, eos_token_id=1, decode=lambda row, **kw: " x "),
+        args=SimpleNamespace(device=torch.device("meta")),
+        model=SimpleNamespace(generate=generate),
+        generation_config=SimpleNamespace(to_dict=lambda: {}))
+    prompts = [torch.ones(3, dtype=torch.long, device="meta"), torch.ones(5, dtype=torch.long, device="meta")]
+    assert LLMCustomTrainer._generate_batched(stub, prompts) == ["x", "x"]
+    assert seen == {"device": torch.device("meta"), "shape": (2, 5)}

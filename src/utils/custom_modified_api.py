@@ -209,8 +209,10 @@ class LLMCustomTrainer(Trainer):
         if pad_id is None:
             pad_id = self.tokenizer_gen.eos_token_id
         max_len = max(p.shape[0] for p in prompt_ids_list)
+        # The Trainer's eval dataloader has already moved prompts to the GPU; pad on the
+        # same device.
         batch = torch.stack([
-            torch.cat([torch.full((max_len - p.shape[0],), pad_id, dtype=p.dtype), p])
+            torch.cat([torch.full((max_len - p.shape[0],), pad_id, dtype=p.dtype, device=p.device), p])
             for p in prompt_ids_list
         ]).to(self.args.device)
         attention_mask = (batch != pad_id).long()
