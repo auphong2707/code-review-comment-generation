@@ -45,7 +45,8 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
             --batch-size "$JUDGE_BS" --out-root "$PREFLIGHT_ROOT"
     done
     # Synthetic pilots alone cannot check dataset parsing, retrieval, metrics or
-    # judge input/cache/output plumbing. Exercise those paths on bounded rows.
+    # judge input/cache/output plumbing. Exercise those paths on bounded rows, in roots
+    # keyed by batch/k so a re-qualification never meets (or reuses) an older smoke run.
     for dataset in trans_review acra_by_ls_pt; do
         subset=(); [[ "$dataset" != acra_by_ls_pt ]] || subset=(--sample-index-file "$CR_SUBSET")
         for model in qwen25-0.5b qwen25 qwen15; do
@@ -53,17 +54,17 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
                 --model_name "$model" --dataset "$dataset" --prompt-version v2 \
                 --memory-profile a100 --batch-size "${ICL_BS[$model]}" --max-prompt-tokens 2048 \
                 --attn-implementation sdpa --num_examples 3 --selection_method bm25 "${subset[@]}" \
-                --max_samples "${ICL_BS[$model]}" --results_dir "$PREFLIGHT_ROOT/icl-smoke/$dataset" --skip-if-complete
+                --max_samples "${ICL_BS[$model]}" --results_dir "$PREFLIGHT_ROOT/icl-smoke/bs${ICL_BS[$model]}/$dataset" --skip-if-complete
         done
     done
     run_step smoke_judge_subset test -r paper/generated/cr_judge_subset.json
     run_step smoke_qwen_pipeline "$PYTHON" tools/update_llm_judge_tables.py \
-        --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/qwen-smoke" \
+        --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/qwen-smoke/k1-bs$JUDGE_BS" \
         --judge-model-path assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct \
         --judge-local-files-only --judge-device cuda --judge-k 1 --judge-batch-size "$JUDGE_BS" \
         --judge-input-token-limit "${JUDGE_MAX_INPUT_TOKENS:-4096}"
     run_step smoke_llama_pipeline "$PYTHON" tools/update_llm_judge_tables.py \
-        --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/llama-smoke" \
+        --limit-jobs 1 --limit-samples 3 --out-root "$PREFLIGHT_ROOT/llama-smoke/k1-bs$JUDGE_BS" \
         --reuse-inputs assets/models/llm-as-judge/table-results/inputs \
         --sample-index-file paper/generated/cr_judge_subset.json \
         --backend hf-chat --column-prefix llama_judge_ \
