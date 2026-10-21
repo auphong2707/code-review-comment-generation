@@ -33,6 +33,20 @@ esac
 if ! jobs=$(qselect -u "${USER:-$(id -un)}" -N rcg_pool 2>&1); then
     stamp "qselect failed ($jobs); not submitting blind"; exit 0
 fi
+# PBS puts a job it failed to launch 20 times on a system hold ("too many failed attempts
+# to run", seen 2026-10-20) that only an admin can release: delete it so its unstarted
+# mark counts as a setup error below. User holds (qhold) are left alone.
+for held in $(qselect -u "${USER:-$(id -un)}" -N rcg_pool -s H 2>/dev/null); do
+    qstat -f "$held" 2>/dev/null | grep -Eq 'Hold_Types = [a-z]*s' || continue
+    qdel "$held" 2>/dev/null || { stamp "could not delete system-held $held"; continue; }
+    stamp "pool job $held was held by PBS after failed launches; deleted it"
+    jobs=$(awk -F. -v id="${held%%.*}" 'NF && $1 != id' <<< "$jobs")
+    # submit_pool.sh counts every listed job: wait (up to 2 min) until this one is gone.
+    for _ in $(seq 24); do
+        qselect -u "${USER:-$(id -un)}" -N rcg_pool 2>/dev/null | grep -q "^${held%%.*}\." || break
+        sleep "${RCG_SUBMIT_RETRY_SLEEP:-5}"
+    done
+done
 for mark in "$STATE"/unstarted.d/*; do
     [[ -e "$mark" ]] || continue
     lost=$(basename "$mark")

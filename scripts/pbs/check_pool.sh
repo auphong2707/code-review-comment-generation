@@ -234,9 +234,14 @@ EOF
 cat > "$scratch/bin/qselect" <<'EOF'
 #!/usr/bin/env bash
 [[ ! -e "$FAKE/qselect-fail" ]] || { echo "qselect: cannot connect to server" >&2; exit 1; }
+[[ " $* " != *" -s H "* ]] || { cat "$FAKE/qselect-held" 2>/dev/null || true; exit 0; }
 cat "$FAKE/qselect" 2>/dev/null || true
 EOF
-chmod +x "$scratch/bin/qsub" "$scratch/bin/qselect"
+cat > "$scratch/bin/qdel" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE/qdel-calls"; sed -i "/^$1\$/d" "$FAKE/qselect" "$FAKE/qselect-held" 2>/dev/null || true
+EOF
+chmod +x "$scratch/bin/qsub" "$scratch/bin/qselect" "$scratch/bin/qdel"
 export PATH="$scratch/bin:$PATH" RCG_SUBMIT_RETRY_SLEEP=0
 export RCG_POOL_STATE="$scratch/state" RCG_POOL_LOG_ROOT="$scratch/logs"
 submit() { local rc=0; bash scripts/pbs/submit_pool.sh "$@" > "$scratch/submit.out" 2>&1 || rc=$?; echo "$rc"; }
@@ -337,6 +342,16 @@ grep -q 'ended before its script ran (1 setup' "$scratch/keeper.out" || fail "un
 rm -f "$scratch/state/errors"; echo "75 620.aimc-hn2 1" > "$scratch/state/last_exit"
 mkdir -p "$scratch/state/started.d"; touch "$scratch/state/unstarted.d/620.aimc-hn2" "$scratch/state/started.d/620.aimc-hn2"
 [[ $(keeper) == 1 && ! -e "$scratch/state/errors" ]] || fail "keeper counted a started job as unstarted"
+# A pool PBS system-held after failed launches is deleted and counted; a user hold is kept.
+rm -rf "$scratch/state/errors" "$scratch/state/started.d" "$scratch/state/unstarted.d" "$scratch/qdel-calls"; echo "75 640.fake 1" > "$scratch/state/last_exit"
+mkdir -p "$scratch/state/unstarted.d"; touch "$scratch/state/unstarted.d/641.fake"; echo 641.fake > "$scratch/qselect"; echo 641.fake > "$scratch/qselect-held"
+printf '641.fake H\n' > "$scratch/jobstates"; echo '    Hold_Types = u' > "$scratch/qstat-extra"
+[[ $(keeper) == 0 && ! -e "$scratch/qdel-calls" && -e "$scratch/state/unstarted.d/641.fake" ]] || fail "keeper deleted a user-held pool"
+echo '    Hold_Types = s' > "$scratch/qstat-extra"
+[[ $(keeper) == 1 && "$(cat "$scratch/qdel-calls")" == 641.fake && "$(cat "$scratch/state/errors")" == 1 ]] ||
+    fail "keeper did not replace a system-held pool"
+grep -q 'held by PBS after failed launches' "$scratch/keeper.out" || fail "held-pool message"
+rm -f "$scratch/qselect" "$scratch/qselect-held" "$scratch/jobstates" "$scratch/qstat-extra" "$scratch/qdel-calls" "$scratch/state/errors"
 grep -q -- '--continue' <(grep -n 'submit_pool.sh' scripts/pbs/pool_keeper.sh | tail -1) || fail "keeper must submit with --continue"
 
 # 9d. POOL_JOBS=2: keeper, launcher and continuations fill up to two pool jobs, never more.
