@@ -40,8 +40,13 @@ def run_probe(args, digest):
         raise RuntimeError("Probe requires a GPU-resident model, not CPU/disk offload")
     model.eval()
     token = tokenizer.encode("code", add_special_tokens=False)[0]
-    input_ids = torch.full((args.batch_size, args.max_input_tokens), token, dtype=torch.long, device=model.device)
-    mask = torch.ones_like(input_ids)
+    # Judges also split long rows into smaller calls (QwenJudge._check_input_budget):
+    # qualify the longest single row they may admit, not only the full batch.
+    shapes = [(args.batch_size, args.max_input_tokens)]
+    long_row = None
+    if args.kind == "judge" and args.batch_size > 1:
+        long_row = args.max_input_tokens * min(judge.LONG_ROW_FACTOR, args.batch_size)
+        shapes.append((1, long_row))
     kwargs = dict(max_new_tokens=output_tokens, min_new_tokens=output_tokens,
                   num_beams=beams, do_sample=args.kind == "judge",
                   pad_token_id=tokenizer.pad_token_id, eos_token_id=model.generation_config.eos_token_id)
@@ -50,16 +55,22 @@ def run_probe(args, digest):
     # Exercise allocation and warm reuse at the exact maximum admitted input/output lengths.
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if args.kind == "icl" else nullcontext()
     with torch.inference_mode(), autocast:
-        for _ in range(3):
-            stop_if_requested()
-            generated = model.generate(input_ids=input_ids, attention_mask=mask, **kwargs)
-            torch.cuda.synchronize()
-            del generated
+        for rows, length in shapes:
+            input_ids = torch.full((rows, length), token, dtype=torch.long, device=model.device)
+            mask = torch.ones_like(input_ids)
+            if rows > 1:
+                mask[1:, 0] = 0   # left padding, as in real batches: builds the full attention mask
+            for _ in range(3):
+                stop_if_requested()
+                generated = model.generate(input_ids=input_ids, attention_mask=mask, **kwargs)
+                torch.cuda.synchronize()
+                del generated
     stop_if_requested()
     peak = torch.cuda.max_memory_reserved() / 2**30
     return {"runtime_digest": digest, "environment": environment_identity(), "hardware": hardware,
             "kind": args.kind, "model": args.model, "max_input_tokens": args.max_input_tokens,
             "max_output_tokens": output_tokens, "batch_size": args.batch_size, "num_beams": beams,
+            "long_row_tokens": long_row,
             "model_revision": getattr(model.config, "_commit_hash", None),
             "peak_reserved_gib": peak, "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
             "total_memory_gib": torch.cuda.get_device_properties(0).total_memory / 2**30,

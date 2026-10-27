@@ -75,8 +75,47 @@ if [[ -n "${PBS_JOBID:-}" && -z "${RCG_POOL_GPUS:-}" ]]; then
     [[ "$granted" =~ ^[0-9]+$ && "$granted" == "${#GPUS[@]}" ]] || {
         echo "Visible GPUs (${GPUS[*]}) do not match the allocation (ngpus=${granted:-unknown})" >&2; exit 2; }
 fi
-declare -A GPU_FREE=() GPU_TASKS=()
-for g in "${GPUS[@]}"; do GPU_FREE["$g"]="$BUDGET"; GPU_TASKS["$g"]=0; done
+declare -A GPU_FREE=() GPU_TASKS=() GPU_USED=() GPU_CAP=() FOREIGN=() FOREIGN_OOM=() UUID_OF=()
+for g in "${GPUS[@]}"; do GPU_FREE["$g"]="$BUDGET"; GPU_TASKS["$g"]=0; GPU_USED["$g"]=0; GPU_CAP["$g"]="$BUDGET"; FOREIGN["$g"]=0; done
+# aimc-gna1 does not isolate GPUs: another user's job ran 54 GiB on a GPU PBS gave us
+# (KI-022). Memory held there by processes outside this pool shrinks that GPU's capacity.
+NVSMI="${RCG_POOL_NVIDIA_SMI:-nvidia-smi}"
+TOTAL_GIB="${RCG_POOL_TOTAL_GIB:-79}"        # usable A100-80GB memory
+SLACK_GIB="${RCG_POOL_SLACK_GIB:-3}"         # left free beside foreign processes
+FOREIGN_OOM_GIB="${RCG_POOL_FOREIGN_OOM_GIB:-2}"
+# GPU memory shortage: OOM, or ICL refusing to offload a model that no longer fits.
+OOM_RE='CUDA out of memory|OutOfMemoryError|cannot silently offload'
+FOREIGN_WAIT="${RCG_POOL_FOREIGN_WAIT:-1800}"     # idle wait when nothing fits beside other jobs
+unfit_since=0
+while IFS=', ' read -r index uuid; do UUID_OF["$index"]="$uuid"; done \
+    < <("$NVSMI" --query-gpu=index,uuid --format=csv,noheader 2>/dev/null || true)
+foreign_checked=0
+refresh_foreign() {
+    local apps ours g pid uuid mib old
+    declare -A mib_of=() mine=()
+    # A failed or hung query keeps the previous readings rather than reporting free GPUs.
+    apps=$(timeout 30 "$NVSMI" --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits 2>/dev/null) ||
+        { foreign_checked=$(date +%s); return 0; }
+    # Descendants of this pool are its own tasks (already counted by cost).
+    for pid in $(ps -e -o pid=,ppid= | awk -v root=$$ '{p[$1] = $2}
+            END {for (x in p) {y = x; while ((y in p) && y != root && y > 1) y = p[y]; if (y == root) print x}}'); do
+        mine["$pid"]=1
+    done
+    while IFS=', ' read -r pid uuid mib; do
+        [[ "$mib" =~ ^[0-9]+$ && -z "${mine[$pid]:-}" ]] || continue
+        mib_of["$uuid"]=$(( ${mib_of[$uuid]:-0} + mib ))
+    done <<< "$apps"
+    for g in "${GPUS[@]}"; do
+        uuid="${UUID_OF[$g]:-$g}"; old="${FOREIGN[$g]}"
+        FOREIGN["$g"]=$(( (${mib_of[$uuid]:-0} + 1023) / 1024 ))
+        GPU_CAP["$g"]=$(( TOTAL_GIB - SLACK_GIB - FOREIGN[$g] ))
+        (( GPU_CAP[$g] <= BUDGET )) || GPU_CAP["$g"]="$BUDGET"
+        (( GPU_CAP[$g] >= 0 )) || GPU_CAP["$g"]=0
+        GPU_FREE["$g"]=$(( GPU_CAP[$g] - GPU_USED[$g] ))
+        (( FOREIGN[$g] == old )) || log "gpu $g: ${FOREIGN[$g]}GiB held by other jobs; capacity ${GPU_CAP[$g]}GiB"
+    done
+    foreign_checked=$(date +%s)
+}
 THREADS="${RCG_POOL_THREADS:-$(( ${NCPUS:-8} / (${#GPUS[@]} * MAX_PER_GPU) ))}"
 (( THREADS >= 1 )) || THREADS=1
 
@@ -134,7 +173,7 @@ foreign_leases() {
 }
 
 # ---- scheduling ----------------------------------------------------------------
-declare -A PID_OF=() GPU_OF=() COST_OF=() ATTEMPT_LOG=() BLOCKED=() INCOMPLETE=() RESERVED=() PARKED=()
+declare -A PID_OF=() GPU_OF=() COST_OF=() ATTEMPT_LOG=() BLOCKED=() INCOMPLETE=() RESERVED=() PARKED=() FOREIGN_AT=()
 STOP=0
 STOPPING=0     # set once shutdown starts: a killed task is incomplete, not failed
 trap 'STOP=1' USR1 TERM INT
@@ -149,7 +188,7 @@ blocked() {    # a prerequisite failed, directly or transitively (deps have lowe
     done
     return 1
 }
-HOLD_ID=""; HOLD_GPU=""   # a GPU drained for a task too big for any current gap
+HOLD_ID=""; HOLD_GPU=""; HOLD_COST=0   # a GPU drained for a task too big for any current gap
 pick_gpu() {    # worst fit: most free memory, under the per-GPU task cap
     local cost="$1" id="$2" best="" g
     for g in "${GPUS[@]}"; do
@@ -174,12 +213,21 @@ launch() {
         RCG_DEADLINE="$DEADLINE" RCG_DEFER_FILE="$STATE/defer/$id" \
         RCG_PBS_CHUNK="$id" $TASK_CMD > "$logf" 2>&1 &
     PID_OF["$id"]=$!; GPU_OF["$id"]="$gpu"; COST_OF["$id"]="$cost"; ATTEMPT_LOG["$id"]="$logf"
-    GPU_FREE["$gpu"]=$(( GPU_FREE[$gpu] - cost )); GPU_TASKS["$gpu"]=$(( GPU_TASKS[$gpu] + 1 ))
+    FOREIGN_AT["$id"]="${FOREIGN[$gpu]}"
+    GPU_USED["$gpu"]=$(( GPU_USED[$gpu] + cost )); GPU_FREE["$gpu"]=$(( GPU_FREE[$gpu] - cost ))
+    GPU_TASKS["$gpu"]=$(( GPU_TASKS[$gpu] + 1 ))
 }
 finish() {
-    local id="$1" rc="$2" gpu="${GPU_OF[$1]}" logf="${ATTEMPT_LOG[$1]}"
-    GPU_FREE["$gpu"]=$(( GPU_FREE[$gpu] + COST_OF[$id] )); GPU_TASKS["$gpu"]=$(( GPU_TASKS[$gpu] - 1 ))
+    local id="$1" rc="$2" gpu="${GPU_OF[$1]}" logf="${ATTEMPT_LOG[$1]}" grew=0
+    GPU_USED["$gpu"]=$(( GPU_USED[$gpu] - COST_OF[$id] )); GPU_FREE["$gpu"]=$(( GPU_FREE[$gpu] + COST_OF[$id] ))
+    GPU_TASKS["$gpu"]=$(( GPU_TASKS[$gpu] - 1 ))
     unset "PID_OF[$id]" "GPU_OF[$id]" "COST_OF[$id]"
+    # Foreign memory present at launch was already excluded from capacity: only memory
+    # that appeared afterwards can explain an OOM that is not the task's own.
+    if (( rc != 0 && rc != 75 )) && ! (( STOPPING )) && grep -qE "$OOM_RE" "$logf"; then
+        refresh_foreign; grew=$(( FOREIGN[$gpu] - ${FOREIGN_AT[$id]:-0} ))
+    fi
+    unset "FOREIGN_AT[$id]"
     if (( rc == 0 )); then
         printf '%s %s %s\n' "$JOB" "$(date +%s)" "$logf" > "$STATE/done/$id"; log "done $id"
     elif (( STOPPING )); then
@@ -190,8 +238,11 @@ finish() {
         log "deferred $id to the next pool job: $(head -c 300 "$STATE/defer/$id")"
     elif (( rc == 75 )) && (( ++INCOMPLETE[$id] < 3 )); then
         log "incomplete $id outside shutdown (exit 75, ${INCOMPLETE[$id]}x); relaunching"
+    elif (( rc != 75 && grew >= FOREIGN_OOM_GIB )) && (( ++FOREIGN_OOM[$id] <= 5 )); then
+        # Not this task's fault: capacity now excludes the other job's new memory.
+        log "out of memory $id after other jobs took ${grew}GiB more of gpu $gpu; requeued (${FOREIGN_OOM[$id]}/5)"
     elif (( rc != 75 )) && [[ ! -e "$STATE/exclusive/$id" ]] &&
-         { (( rc > 128 )) || grep -qE 'CUDA out of memory|OutOfMemoryError' "$logf"; }; then
+         { (( rc > 128 )) || grep -qE "$OOM_RE" "$logf"; }; then
         # GPU OOM, or a signal the pool did not send (e.g. host-memory cgroup kill, 137).
         touch "$STATE/exclusive/$id"; log "out of memory or killed ($rc) $id; retry alone on a GPU"
     else
@@ -236,12 +287,15 @@ while true; do
     (( $(date +%s) < DEADLINE )) || { (( STOP )) || log "walltime margin reached"; STOP=1; }
     (( STOP )) && break
     mark_blocked
-    # Drop a hold whose task can no longer start here (finished, failed, blocked, leased).
+    (( $(date +%s) - foreign_checked < ${RCG_POOL_FOREIGN_EVERY:-60} )) || refresh_foreign
+    # Drop a hold whose task can no longer start here (finished, failed, blocked, leased),
+    # or that another job's memory now keeps from ever fitting on the held GPU.
     if [[ -n "$HOLD_ID" ]] && [[ -e "$STATE/done/$HOLD_ID" || -e "$STATE/failed/$HOLD_ID" ||
-            -n "${BLOCKED[$HOLD_ID]:-}" || -n "${PARKED[$HOLD_ID]:-}" || -d "$STATE/lease/$HOLD_ID" ]]; then
+            -n "${BLOCKED[$HOLD_ID]:-}" || -n "${PARKED[$HOLD_ID]:-}" || -d "$STATE/lease/$HOLD_ID" ]] ||
+            { [[ -n "$HOLD_ID" ]] && (( HOLD_COST > GPU_CAP[$HOLD_GPU] )); }; then
         HOLD_ID=""; HOLD_GPU=""
     fi
-    pending=0 ready_waiting=0
+    pending=0 ready_waiting=0 unfit_waiting=0
     for id in "${IDS[@]}"; do
         [[ -e "$STATE/done/$id" || -e "$STATE/failed/$id" || -n "${PID_OF[$id]:-}" ]] && continue
         [[ -n "${BLOCKED[$id]:-}" || -n "${PARKED[$id]:-}" ]] && continue
@@ -249,16 +303,21 @@ while true; do
         [[ -d "$STATE/lease/$id" ]] && continue
         deps_done "$id" || continue
         cost_of "$id"; cost="$COST"
+        fits_somewhere=0
+        for g in "${GPUS[@]}"; do (( GPU_CAP[$g] < cost )) || fits_somewhere=1; done
+        (( fits_somewhere )) || { unfit_waiting=1; continue; }   # other jobs' memory: see below
         if ! gpu=$(pick_gpu "$cost" "$id"); then
             ready_waiting=1
             if [[ -z "$HOLD_ID" ]]; then     # too big for every gap: drain the emptiest GPU
-                emptiest=""
+                emptiest=""                  # that could ever hold it beside other jobs
                 for g in "${GPUS[@]}"; do
+                    (( GPU_CAP[$g] >= cost )) || continue
                     [[ -n "$emptiest" ]] && (( GPU_FREE[$g] <= GPU_FREE[$emptiest] )) && continue
                     emptiest="$g"
                 done
-                if (( cost > GPU_FREE[$emptiest] )); then
-                    HOLD_ID="$id"; HOLD_GPU="$emptiest"; log "hold gpu $HOLD_GPU for $id (${cost}GiB)"
+                if [[ -n "$emptiest" ]] && (( cost > GPU_FREE[$emptiest] )); then
+                    HOLD_ID="$id"; HOLD_GPU="$emptiest"; HOLD_COST="$cost"
+                    log "hold gpu $HOLD_GPU for $id (${cost}GiB)"
                 fi
             fi
             continue
@@ -270,6 +329,15 @@ while true; do
         launch "$id" "$gpu" "$cost"; last_launch=$(date +%s)
         [[ "$id" != "$HOLD_ID" ]] || { HOLD_ID=""; HOLD_GPU=""; }
     done
+    if (( ${#PID_OF[@]} == 0 && ready_waiting == 0 && unfit_waiting )); then
+        # Every ready task is bigger than what other jobs leave on our GPUs: wait a while
+        # for them to leave, then exit 75 so a later pool job (other GPUs) continues.
+        (( unfit_since )) || { unfit_since=$(date +%s)
+            log "no ready task fits beside other jobs' memory (caps: $(for g in "${GPUS[@]}"; do printf '%s=%sGiB ' "$g" "${GPU_CAP[$g]}"; done)); waiting up to ${FOREIGN_WAIT}s"; }
+        (( $(date +%s) - unfit_since < FOREIGN_WAIT )) || { log "still no fit; leaving the work for a later pool job"; break; }
+        nap "$POLL"; continue
+    fi
+    unfit_since=0
     if (( ${#PID_OF[@]} == 0 && ready_waiting == 0 )); then
         (( pending == 0 )) && break                                   # all done or blocked
         foreign_leases || { reclaim_stale; foreign_leases || break; }  # nothing can progress here

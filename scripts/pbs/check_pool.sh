@@ -9,7 +9,7 @@ scratch=$(mktemp -d)
 trap 'pkill -f "$scratch/" 2>/dev/null || true; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/bin" "$scratch/pre/admissions"
 export RCG_ROOT="$ROOT" RCG_PREFLIGHT_ROOT="$scratch/pre" RCG_QSTAT="$scratch/bin/qstat" RCG_POOL_ALLOW_LOCAL=1
-export RCG_POOL_GPUS=0,1 RCG_POOL_POLL=0.05 RCG_POOL_LAUNCH_GAP=0 RCG_POOL_MARGIN=1 RCG_POOL_GRACE=2
+export RCG_POOL_NVIDIA_SMI=/bin/false RCG_POOL_GPUS=0,1 RCG_POOL_POLL=0.05 RCG_POOL_LAUNCH_GAP=0 RCG_POOL_MARGIN=1 RCG_POOL_GRACE=2
 export RCG_POOL_TASK_CMD="bash $scratch/task.sh" EVENTS="$scratch/events" FAKE="$scratch"
 unset PBS_JOBID CUDA_VISIBLE_DEVICES
 
@@ -43,6 +43,9 @@ case "$mode" in
     ok2) sleep 2; end 0 ;;
     fail) end 3 ;;
     oom-once) if [[ ! -e "$FAKE/oom-$id" ]]; then touch "$FAKE/oom-$id"; echo "torch.OutOfMemoryError: CUDA out of memory"; end 1; fi; end 0 ;;
+    # Another job grabs 8 GiB of this GPU, then the task runs out of memory.
+    oom-foreign-once) if [[ ! -e "$FAKE/oom-$id" ]]; then touch "$FAKE/oom-$id"; g=a; [[ "$CUDA_VISIBLE_DEVICES" == 0 ]] || g=b
+                          echo "999993, GPU-$g, 8192" >> "$FAKE/foreign-apps"; echo "torch.OutOfMemoryError: CUDA out of memory"; end 1; fi; end 0 ;;
     slow) trap 'end 75' USR1; sleep 30 & wait $!; end 0 ;;
     stuck) trap '' USR1; setsid sleep 1000 & echo "$!" > "$FAKE/orphan-$id"; sleep 1000 & wait $!; end 0 ;;
     # USR1 before common.sh installs its trap (require_gpu): the default action kills it (138).
@@ -139,6 +142,39 @@ echo killed-once > "$scratch/mode/3"      # host-memory cgroup kill (SIGKILL, ex
 [[ -e "$scratch/state/exclusive/2" ]] && grep -q 'start 2 .*cost=70GiB' "$scratch/pool.out" || fail "oom retry not exclusive"
 [[ -e "$scratch/state/exclusive/3" ]] && grep -q 'start 3 .*cost=70GiB' "$scratch/pool.out" || fail "killed task not retried alone"
 check_events
+
+# 4e. Another job's processes on our GPUs (KI-022): 52 GiB on GPU 1 caps it at 79-3-52 =
+#     24 GiB, so no bigger task starts there. An OOM after other jobs took more memory is
+#     requeued; an OOM beside memory already there at launch escalates as before.
+reset
+cat > "$scratch/bin/fake-nvsmi" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+    *query-gpu=index,uuid*) printf '0, GPU-a\n1, GPU-b\n' ;;
+    *query-compute-apps*) cat "$FAKE/foreign-apps" ;;
+esac
+EOF
+chmod +x "$scratch/bin/fake-nvsmi"
+foreign_pool() { RCG_POOL_NVIDIA_SMI="$scratch/bin/fake-nvsmi" RCG_POOL_FOREIGN_EVERY=0 run_pool; }
+printf '999990, GPU-a, 3072\n999991, GPU-b, 53248\n999992, GPU-b, [N/A]\n' > "$scratch/foreign-apps"
+echo oom-foreign-once > "$scratch/mode/2"
+[[ $(foreign_pool) == 0 ]] || fail "foreign-memory run exit"
+grep -q 'gpu 1: 52GiB held by other jobs; capacity 24GiB' "$scratch/pool.out" || fail "foreign capacity not logged"
+awk '/ start [0-9]+ .* gpu=1 cost=/ {c = $0; sub(/.*cost=/, "", c); sub(/GiB.*/, "", c); if (c + 0 > 24) bad = 1}
+     END {exit bad}' "$scratch/pool.out" || fail "task over the foreign-reduced capacity started on gpu 1"
+grep -qE 'out of memory 2 after other jobs took 8GiB more of gpu [01]; requeued \(1/5\)' "$scratch/pool.out" &&
+    [[ ! -e "$scratch/state/exclusive/2" && -e "$scratch/state/done/2" ]] || fail "foreign OOM not requeued"
+check_events
+reset
+printf '999990, GPU-a, 3072\n999991, GPU-b, 53248\n' > "$scratch/foreign-apps"
+echo oom-once > "$scratch/mode/2"
+[[ $(foreign_pool) == 0 && -e "$scratch/state/exclusive/2" ]] || fail "OOM beside memory present at launch must escalate"
+# Nothing fits beside other jobs (70 GiB on both GPUs): wait, then leave it (75) to a later pool.
+reset
+printf '999990, GPU-a, 71680\n999991, GPU-b, 71680\n' > "$scratch/foreign-apps"
+[[ $(RCG_POOL_FOREIGN_WAIT=1 foreign_pool) == 75 ]] || fail "unfit pool must leave the work (75)"
+grep -q 'still no fit; leaving the work for a later pool job' "$scratch/pool.out" && ! grep -q ' start ' "$scratch/pool.out" ||
+    fail "unfit wait"
 
 # 4c. A whole-GPU task is not starved: with 2,3,4 (32 GiB, slow) on both GPUs, task 5
 #     (exclusive, 70 GiB) holds the emptiest GPU; nothing else starts there before it.

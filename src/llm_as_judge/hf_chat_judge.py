@@ -40,7 +40,8 @@ class HFChatJudge(QwenJudge):
         inputs = self.tokenizer(
             prompts, padding=True, add_special_tokens=False, return_tensors="pt"
         )
-        self._check_input_budget(inputs)
+        if not self._check_input_budget(inputs):
+            return self._split_generate(prompts, deterministic=deterministic, run_index=run_index)
         inputs = inputs.to(self._device())
         input_length = inputs["input_ids"].shape[1]
 

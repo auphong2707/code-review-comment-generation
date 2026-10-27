@@ -163,15 +163,36 @@ class QwenJudge:
             )
         return "\n\n".join(f"{item['role']}: {item['content']}" for item in messages) + "\nassistant:"
 
-    def _check_input_budget(self, inputs):
+    # A row longer than the per-row budget runs alone, up to this many times that budget
+    # (capped by batch_size); the probe qualifies exactly that single-row shape too.
+    LONG_ROW_FACTOR = 4
+
+    def _check_input_budget(self, inputs) -> bool:
+        """True when this padded call fits a qualified shape (batch_size rows of
+        input_token_limit tokens, or one long row); False when it must be split into
+        smaller calls; raises for a single row no smaller call can admit."""
         limit = self.config.input_token_limit
-        if limit is not None and inputs["input_ids"].shape[-1] > limit:
-            raise ValueError(f"Judge input exceeds qualified {limit}-token budget; re-probe a larger budget")
+        if limit is None:
+            return True
+        rows, length = inputs["input_ids"].shape
+        row_cap = limit * min(self.LONG_ROW_FACTOR, self.config.batch_size)
+        if length <= limit and rows <= self.config.batch_size or rows == 1 and length <= row_cap:
+            return True
+        if rows > 1:
+            return False
+        raise ValueError(f"Judge input exceeds qualified {row_cap}-token budget; re-probe a larger budget")
+
+    def _split_generate(self, prompts, **kwargs) -> list[str]:
+        """Halve an over-budget call (padding follows the longest row) and keep order."""
+        half = len(prompts) // 2
+        return (self._generate_from_prompts(prompts[:half], **kwargs)
+                + self._generate_from_prompts(prompts[half:], **kwargs))
 
     def _generate_from_prompts(self, prompts: list[str], *, deterministic: bool = False,
                                run_index: int = 0) -> list[str]:
         inputs = self.tokenizer(prompts, padding=True, return_tensors="pt")
-        self._check_input_budget(inputs)
+        if not self._check_input_budget(inputs):
+            return self._split_generate(prompts, deterministic=deterministic, run_index=run_index)
         inputs = inputs.to(self._device())
         input_length = inputs["input_ids"].shape[1]
 

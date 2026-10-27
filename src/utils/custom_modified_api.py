@@ -315,26 +315,39 @@ class LLMCustomTrainer(Trainer):
 
     def _compute_generation_metrics_batched(self, dataset):
         """Batched variant of the generation loop (gen_batch_size > 1): same
-        prompt extraction and metrics, generation in left-padded chunks."""
-        prompts, references = [], []
+        prompt extraction and metrics, generation in left-padded chunks. A row
+        whose assistant token was truncated away scores as "<FAILED>" against an
+        empty reference, as in the per-sample loop, which also aborts above 50%."""
+        prompts, references, failed = [], [], set()
         eval_dataloader = self.get_eval_dataloader(dataset)
         for batch in eval_dataloader:
             labels = batch.get("labels")
             if labels is None:
                 raise RuntimeError("ERROR: No 'labels' key found in batch! Check your data collator.")
             for i in range(batch["input_ids"].shape[0]):
-                prompt_ids, reference_text = self._extract_prompt_and_reference(
-                    batch["input_ids"][i], labels[i]
-                )
+                try:
+                    prompt_ids, reference_text = self._extract_prompt_and_reference(
+                        batch["input_ids"][i], labels[i]
+                    )
+                except RuntimeError as e:
+                    if self.debug:
+                        logger.warning(f"WARNING: Failed sample {len(references)}: {e}")
+                    failed.add(len(references))
+                    prompt_ids, reference_text = None, ""
                 prompts.append(prompt_ids)
                 references.append(reference_text)
+        if len(failed) > len(references) * 0.5:
+            raise RuntimeError(f"CRITICAL: {len(failed)}/{len(references)} samples failed! Check your data format.")
 
-        predictions = []
+        valid = [p for p in prompts if p is not None]
+        generated = []
         with torch.no_grad():
-            for start in tqdm(range(0, len(prompts), self.gen_batch_size),
+            for start in tqdm(range(0, len(valid), self.gen_batch_size),
                               desc=f"Evaluating (batched x{self.gen_batch_size})"):
-                chunk = prompts[start:start + self.gen_batch_size]
-                predictions.extend(guard_empty(t) for t in self._generate_batched(chunk))
+                chunk = valid[start:start + self.gen_batch_size]
+                generated.extend(guard_empty(t) for t in self._generate_batched(chunk))
+        generated = iter(generated)
+        predictions = ["<FAILED>" if i in failed else next(generated) for i in range(len(prompts))]
 
         metric_values = compute_generation_metrics(predictions, references)
         logger.info(f"BLEU-4: {metric_values['bleu_4']:.4f}, Exact Match: {metric_values['exact_match']:.4f}")
