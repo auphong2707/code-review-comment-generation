@@ -295,14 +295,16 @@ echo "555.fake" > "$scratch/qselect"
 rm "$scratch/qselect"
 [[ $(RCG_PYTHON=/bin/true submit --gpus 3) == 0 && $(calls) == 1 ]] || fail "first submission"
 call=$(cat "$scratch/qsub-calls")
-[[ "$call" == *"-N rcg_pool -q a100q -P 20260203 "* && "$call" == *"select=1:ncpus=24:ngpus=3:mem=192gb"* && "$call" == *"walltime=100:00:00"* ]] || fail "resources: $call"
+[[ "$call" == *"-N rcg_pool -q a100q -P 20260203 "* && "$call" == *"select=1:ncpus=24:ngpus=3:mem=48gb"* && "$call" == *"walltime=100:00:00"* ]] || fail "resources: $call"
 [[ "$call" == *"RCG_PYTHON=/bin/true"* && "$call" == *"RCG_ROOT=$ROOT"* && "$call" != *" -V "* ]] || fail "environment: $call"
 # Command form (no spooled script: a broken MoM spool exits 126), so -j oe is explicit.
 [[ "$call" == *" -j oe -v "*" -- /bin/bash $ROOT/scripts/pbs/pool.pbs" ]] || fail "command-form submission: $call"
 [[ -e "$scratch/state/unstarted.d/777.fake" ]] || fail "submission must mark the job unstarted"
 grep -qx 'POOL_GPUS=3' "$scratch/state/submit.env" || fail "submission not recorded"
-RCG_PYTHON=/bin/true bash scripts/pbs/submit_pool.sh --gpus 2 --ncpus 8 --preview | grep -q -- "select=1:ncpus=8:ngpus=2:mem=128gb" || fail "--ncpus not applied"
+RCG_PYTHON=/bin/true bash scripts/pbs/submit_pool.sh --gpus 2 --ncpus 8 --preview | grep -q -- "select=1:ncpus=8:ngpus=2:mem=32gb" || fail "--ncpus not applied"
 [[ $(RCG_PYTHON=/bin/true submit --ncpus 0) == 2 ]] || fail "--ncpus 0 accepted"
+RCG_PYTHON=/bin/true bash scripts/pbs/submit_pool.sh --gpus 2 --mem-gb 48 --preview | grep -q -- "ngpus=2:mem=48gb" || fail "--mem-gb not applied"
+[[ $(RCG_PYTHON=/bin/true submit --mem-gb 0) == 2 ]] || fail "--mem-gb 0 accepted"
 
 # 8. A pool that stops at walltime queues its continuation with the recorded settings;
 #    a refused qsub is retried three times and then left to the keeper.
@@ -314,7 +316,7 @@ echo "600.fake" > "$scratch/qselect"     # the finishing pool itself is still li
 rc=0; (cd "$scratch"; unset RCG_ROOT; PBS_O_WORKDIR="$ROOT" RCG_PYTHON=/bin/true RCG_POOL_SECONDS=4 \
     PBS_JOBID=600.fake bash spooled-pool.pbs) > "$scratch/pool.out" 2>&1 || rc=$?
 [[ "$rc" == 75 && $(calls) == 1 ]] || fail "continuation not submitted (rc $rc, calls $(calls))"
-grep -q "ngpus=2:mem=128gb" "$scratch/qsub-calls" || fail "continuation resources: $(cat "$scratch/qsub-calls")"
+grep -q "ngpus=2:mem=32gb" "$scratch/qsub-calls" || fail "continuation resources: $(cat "$scratch/qsub-calls")"
 [[ "$(cut -d' ' -f1 "$scratch/state/last_exit" 2>/dev/null)" == "" ]] || fail "continuation must clear last_exit"
 [[ -e "$scratch/state/unstarted.d/777.fake" ]] || fail "continuation must be marked unstarted"
 # ...but another pool job (different number, any server suffix) blocks it.

@@ -5,7 +5,7 @@
 #PBS -N rcg_pool
 #PBS -q a100q
 #PBS -P 20260203
-#PBS -l select=1:ncpus=16:ngpus=2:mem=128gb
+#PBS -l select=1:ncpus=16:ngpus=2:mem=32gb
 #PBS -l walltime=100:00:00
 #PBS -j oe
 ROOT="${RCG_ROOT:-${PBS_O_WORKDIR:?Submit from the repository root}}"
