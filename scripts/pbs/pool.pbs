@@ -27,6 +27,8 @@ fi
     echo "Set RCG_PYTHON to the rcg-a100 interpreter (absolute path)" >&2; error_verdict 2; exit 2; }
 export PATH="$(dirname "$RCG_PYTHON"):/opt/pbs/bin:$PATH"
 export WANDB_MODE="${WANDB_MODE:-offline}" RCG_TARGET_GPU="${RCG_TARGET_GPU:-a100_80gb}"
+# wandb's 30 s service start limit failed task 35 on a loaded node (2026-10-29).
+export WANDB__SERVICE_WAIT="${WANDB__SERVICE_WAIT:-300}"
 export HF_HOME="${HF_HOME:-$ROOT/assets/cache/huggingface}" NLTK_DATA="${NLTK_DATA:-$ROOT/assets/cache/nltk_data}"
 rc=0
 bash "$ROOT/scripts/pbs/pool.sh" || rc=$?
