@@ -7,7 +7,7 @@ cd "$ROOT"
 STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 [[ -d "$STATE" ]] || { echo "No pool state yet at $STATE"; exit 0; }
 now=$(date +%s)
-bash scripts/pbs/chunks.sh | awk -F '\t' -v state="$STATE" -v now="$now" '
+bash scripts/pool/chunks.sh | awk -F '\t' -v state="$STATE" -v now="$now" '
     function exists(p) { return (system("test -e \"" p "\"") == 0) }
     {
         group = ($2 == "step") ? $3 : $2 " " $3
@@ -32,7 +32,5 @@ bash scripts/pbs/chunks.sh | awk -F '\t' -v state="$STATE" -v now="$now" '
             split(line, b, " "); printf "FAILED %s %s exit %s log %s\n", id, bad[id], b[2], b[3]
         }
     }'
-[[ -z "$(ls -A "$STATE/unstarted.d" 2>/dev/null)" ]] || echo "submitted, script not started yet: $(ls "$STATE/unstarted.d" | tr '\n' ' ')"
-[[ ! -f "$STATE/last_exit" ]] || echo "last pool exit: $(cat "$STATE/last_exit") (0 complete, 75 continuing, 1 blocked)"
-command -v qselect >/dev/null && echo "pool jobs: $(qselect -u "${USER:-$(id -un)}" -N rcg_pool -s QRHW 2>/dev/null | tr '\n' ' ')"
+[[ ! -f "$STATE/last_exit" ]] || echo "last pool exit: $(cat "$STATE/last_exit") (0 complete, 75 work left, 1 only failed/blocked left)"
 true

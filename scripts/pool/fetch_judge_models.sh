@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Download missing LLM-judge weights into assets/models/llm-judge/. Run on the SUTD
+# Download missing LLM-judge weights into assets/models/llm-judge/. Run on the Spartan
 # login node (it has internet) from the repository root, with rcg-a100 activated:
-#   bash scripts/pbs/fetch_judge_models.sh
+#   bash scripts/pool/fetch_judge_models.sh
 # Reads HF_TOKEN from .env. Llama-3.1-8B-Instruct is gated: the HF account must be
 # approved on its model page, and a fine-grained token also needs "Read access to
 # contents of all public gated repos you can access". Re-running resumes.
 set -euo pipefail
 cd "${RCG_ROOT:-$PWD}"
-[[ -f scripts/pbs/run_phase.sh ]] || { echo "Run from the repository root" >&2; exit 2; }
+[[ -f scripts/pool/run_chunk.sh ]] || { echo "Run from the repository root" >&2; exit 2; }
 if [[ -f .env ]]; then set -a; source ./.env; set +a; fi
 : "${HF_TOKEN:?Set HF_TOKEN (in .env or the environment)}"
 command -v hf >/dev/null || { echo "'hf' not found; activate rcg-a100" >&2; exit 2; }

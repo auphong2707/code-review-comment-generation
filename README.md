@@ -2,12 +2,10 @@
 
 This repository contains implementations for training various deep learning models for automated code review generation.
 
-For the revision campaign on one A100 80GB, follow the
-[SUTD server setup](scripts/pbs/SERVER_SETUP.md) and
-[eight-job PBS workflow](scripts/pbs/README.md). Connect from Ubuntu through the
-macOS `bridge` to `sutd_mega`; use `qsub` and `qstat`/`myjob` on that server.
-The first job is the smoke and
-recovery gate; the remaining jobs run only after their dependencies succeed.
+The revision campaign runs on Spartan HPC (University of Melbourne, Slurm, A100 80GB) as one
+job file, `scripts/spartan/revision.slurm` (1–4 GPUs, default 2). Before running, the job
+checks the public Hugging Face results dataset, then runs the campaign, writes a log per
+section and pushes new results back. Setup and usage: [scripts/spartan/README.md](scripts/spartan/README.md).
 
 ## Project Structure
 

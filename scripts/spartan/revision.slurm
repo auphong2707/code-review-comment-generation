@@ -24,7 +24,7 @@
 #   02 hf-status    download finished results missing here from the public HF dataset,
 #                   then report done/missing per section (campaigns A-D, judges, pool)
 #   03 inputs       datasets, judge weights, model cache
-#   04 campaign     the pool (scripts/pbs/pool.sh, log 04-campaign-pool.log) over the 226 tasks;
+#   04 campaign     the pool (scripts/pool/pool.sh, log 04-campaign-pool.log) over the 226 tasks;
 #                   a per-section progress table every 30 minutes; finished work is skipped
 #   05 hf-push      upload new results to the same HF dataset while the campaign runs
 #                   (after tasks complete, at most every 20 minutes) and once at the end
@@ -100,7 +100,7 @@ submit() {    # submit <preview|submit|continue> ; uses GPUS MEM_GB WALLTIME
     [[ -x "$RCG_PYTHON" ]] || { echo "RCG_PYTHON is not executable: $RCG_PYTHON" >&2; return 2; }
     if [[ -e "$STATE/stop" ]]; then
         echo "Stop file present ($STATE/stop): remove it to resume the campaign" >&2; return 2; fi
-    source scripts/pbs/check_judge_inputs.sh
+    source scripts/pool/check_judge_inputs.sh
     check_judge_inputs || return 2
     # One campaign job at a time (a continuation ignores itself).
     queued=$("$SQUEUE" -h -u "${USER:-$(id -un)}" -n "$JOB_NAME" -o %i 2>&1) ||
@@ -205,7 +205,7 @@ sec_hf_status() {
             "$(find "$JUDGES/$backend/scored" -type f 2>/dev/null | wc -l)"
     done
     echo "-- pool state ($STATE)"
-    bash scripts/pbs/pool_status.sh
+    bash scripts/pool/pool_status.sh
     echo "Finished work is skipped: training/ICL steps run with --skip-if-complete; judges reuse their cache."
 }
 
@@ -216,7 +216,7 @@ sec_inputs() {
     done
     [[ -s paper/generated/cr_judge_subset.json ]] && echo "OK paper/generated/cr_judge_subset.json" ||
         { echo "MISSING paper/generated/cr_judge_subset.json" >&2; rc=2; }
-    source scripts/pbs/check_judge_inputs.sh
+    source scripts/pool/check_judge_inputs.sh
     check_judge_inputs && echo "OK judge weights (Qwen2.5-Coder-3B, Llama-3.1-8B)" || rc=2
     local cached; cached=$(find "$HF_HOME/hub" -maxdepth 1 -name 'models--*' 2>/dev/null | wc -l)
     echo "model cache $HF_HOME: $cached models"
@@ -261,7 +261,7 @@ done_count() { find "$STATE/done" -type f 2>/dev/null | wc -l; }
 # ---- campaign ------------------------------------------------------------------------
 progress() {
     echo "-- progress $(stamp)"
-    bash scripts/pbs/pool_status.sh
+    bash scripts/pool/pool_status.sh
     [[ ! -s "$LOGDIR/04-campaign-pool.log" ]] || { echo "pool log (last lines):"; tail -3 "$LOGDIR/04-campaign-pool.log" | sed 's/^/    /'; }
 }
 POOL_RC="" TERMINATED=0 CONTINUATION="not needed"
@@ -278,7 +278,7 @@ continue_campaign() {
 }
 sec_campaign() {
     local pool_pid push_pid="" last_push=$((SECONDS - PUSH_EVERY)) pushed_done last_report=$SECONDS done_now
-    local pool_cmd=(bash "$ROOT/scripts/pbs/pool.sh")
+    local pool_cmd=(bash "$ROOT/scripts/pool/pool.sh")
     [[ -z "${RCG_SPARTAN_POOL_CMD:-}" ]] || read -ra pool_cmd <<< "$RCG_SPARTAN_POOL_CMD"     # tests
     pushed_done=$(done_count)
     # The pool logs to 04-campaign-pool.log; the section log and .out get the progress tables.
@@ -312,7 +312,7 @@ sec_push() {     # the final push, printed here (pushes during the campaign appe
     hf_push
 }
 sec_summary() {
-    bash scripts/pbs/pool_status.sh
+    bash scripts/pool/pool_status.sh
     case "$POOL_RC" in
         0) echo "Campaign complete." ;;
         75) echo "Work left; continuation $CONTINUATION" ;;
@@ -356,7 +356,7 @@ while (( $# )); do
     esac
 done
 case "$mode" in
-    status) bash scripts/pbs/pool_status.sh
+    status) bash scripts/pool/pool_status.sh
             "$SQUEUE" -u "${USER:-$(id -un)}" -n "$JOB_NAME" 2>/dev/null || true ;;
     sync) [[ -n "${RCG_PYTHON:-}" && -x "$RCG_PYTHON" ]] || { echo "Set RCG_PYTHON to the rcg-a100 python" >&2; exit 2; }
           LOGDIR="$LOG_ROOT/login-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$LOGDIR"

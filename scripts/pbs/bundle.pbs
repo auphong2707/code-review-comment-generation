@@ -1,9 +1,0 @@
-#!/bin/bash
-#PBS -N rcg_bundle
-#PBS -q a100q
-#PBS -P 20260203
-#PBS -l select=1:ncpus=8:ngpus=1:mem=64gb
-#PBS -l walltime=100:00:00
-#PBS -j oe
-#PBS -V
-exec bash "${RCG_ROOT:-${PBS_O_WORKDIR:?Submit from the repository root}}/scripts/pbs/run_phase.sh" bundle

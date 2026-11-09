@@ -6,7 +6,7 @@
 # "exclusive" for a whole GPU. Bash only.
 set -euo pipefail
 cd "${RCG_ROOT:-$(dirname "${BASH_SOURCE[0]}")/../..}"
-inventory=$(bash scripts/pbs/chunks.sh)
+inventory=$(bash scripts/pool/chunks.sh)
 
 # Campaign previews give each step's exact argv, the same text chunks.sh parses.
 declare -A ARGV=()

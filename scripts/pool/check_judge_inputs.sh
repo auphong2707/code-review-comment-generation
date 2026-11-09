@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail before queueing anything if judge weights are missing or partial: the smoke task
 # otherwise spends hours on training probes before its judge probes reach them.
-# Sourced by the launchers from the repository root; RCG_SKIP_INPUT_CHECK=1 is for tests.
+# Sourced by scripts/spartan/revision.slurm from the repository root; RCG_SKIP_INPUT_CHECK=1 is for tests.
 check_judge_inputs() {
     [[ "${RCG_SKIP_INPUT_CHECK:-0}" != 1 ]] || return 0
     local missing=() model file shard
@@ -20,7 +20,7 @@ check_judge_inputs() {
     done
     if (( ${#missing[@]} )); then
         printf 'Missing judge input: %s\n' "${missing[@]}" >&2
-        echo "Fetch with: bash scripts/pbs/fetch_judge_models.sh (login node)" >&2
+        echo "Fetch with: bash scripts/pool/fetch_judge_models.sh (Spartan login node)" >&2
         return 2
     fi
 }
