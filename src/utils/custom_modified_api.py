@@ -1,46 +1,84 @@
-import torch, time, wandb, evaluate, logging, warnings
+import torch, time, wandb, logging, warnings
 from transformers import TrainerCallback, Trainer, GenerationConfig
 from tqdm import tqdm
 
+from src.evaluation.metrics import (
+    as_eval_results,
+    compute_generation_metrics,
+    guard_empty,
+    preload_metrics,
+)
+
+_GIB = 1_073_741_824
+
+
 class TimeMemoryCallback(TrainerCallback):
+    """Step-time / eval-time / peak-VRAM tracking (phase 03).
+
+    The previous version accumulated wall-clock between on_epoch_begin and
+    on_epoch_end and relied on on_evaluate_begin/on_evaluate_end — hooks that
+    do not exist on TrainerCallback and therefore never fired. Now training
+    time is the sum of on_step_begin→on_step_end deltas per epoch, and eval
+    wall-clock is on_epoch_end→on_evaluate (on_epoch_end precedes the epoch
+    evaluation in transformers 4.47). Peaks are maxima over all CUDA devices
+    and are never reset, so they describe the whole run.
+    """
+
     def __init__(self):
-        self.train_time_accumulated = 0.0
-        
+        self.step_time_per_epoch = []
+        self.eval_time_per_epoch = []
+        self.peak_vram_allocated_gb = 0.0
+        self.peak_vram_reserved_gb = 0.0
+        self._step_start = None
+        self._epoch_step_time = 0.0
+        self._eval_anchor = None
+
+    def _update_peaks(self):
+        for device in range(torch.cuda.device_count()):
+            self.peak_vram_allocated_gb = max(
+                self.peak_vram_allocated_gb, torch.cuda.max_memory_allocated(device) / _GIB)
+            self.peak_vram_reserved_gb = max(
+                self.peak_vram_reserved_gb, torch.cuda.max_memory_reserved(device) / _GIB)
+
     def on_epoch_begin(self, args, state, control, **kwargs):
-        torch.cuda.reset_peak_memory_stats()
-        self.start_time = time.time()
-        self.train_time_accumulated = 0.0
+        self._epoch_step_time = 0.0
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        self._step_start = time.time()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self._step_start is not None:
+            self._epoch_step_time += time.time() - self._step_start
+            self._step_start = None
 
     def on_epoch_end(self, args, state, control, **kwargs):
-        # Add any remaining training time (if no evaluation happened at the end)
-        if hasattr(self, 'start_time'):
-            self.train_time_accumulated += time.time() - self.start_time
-            
-        vram_gb = torch.cuda.max_memory_allocated() / 1_073_741_824
+        self._update_peaks()
+        self.step_time_per_epoch.append(self._epoch_step_time)
+        self._eval_anchor = time.time()
         wandb.log({
             "epoch": state.epoch,
-            "train_time_h": self.train_time_accumulated / 3600,
-            "vram_used_GB": vram_gb
+            "train_time_h": self._epoch_step_time / 3600,
+            "vram_used_GB": self.peak_vram_allocated_gb,
+            "vram_reserved_GB": self.peak_vram_reserved_gb,
         }, step=state.global_step)
 
-    def on_evaluate_begin(self, args, state, control, **kwargs):
-        # Pause training timer and accumulate training time so far
-        if hasattr(self, 'start_time'):
-            self.train_time_accumulated += time.time() - self.start_time
-            
-        torch.cuda.reset_peak_memory_stats()
-        self.eval_start_time = time.time()
+    def on_evaluate(self, args, state, control, **kwargs):
+        if self._eval_anchor is None:
+            return
+        elapsed = time.time() - self._eval_anchor
+        self._eval_anchor = None
+        self.eval_time_per_epoch.append(elapsed)
+        self._update_peaks()
+        wandb.log({"eval_time_m": elapsed / 60}, step=state.global_step)
 
-    def on_evaluate_end(self, args, state, control, **kwargs):
-        elapsed = time.time() - self.eval_start_time     # s
-        vram_gb = torch.cuda.max_memory_allocated() / 1_073_741_824
-        wandb.log({
-            "eval_time_m": elapsed / 60,
-            "eval_vram_used_GB": vram_gb
-        }, step=state.global_step)
-        
-        # Resume training timer
-        self.start_time = time.time()
+    def summary(self):
+        self._update_peaks()
+        return {
+            "train_step_time_s": self.step_time_per_epoch,
+            "eval_time_s": self.eval_time_per_epoch,
+            "peak_vram_allocated_gb": self.peak_vram_allocated_gb,
+            "peak_vram_reserved_gb": self.peak_vram_reserved_gb,
+        }
 
 
 
@@ -54,12 +92,17 @@ class LLMCustomTrainer(Trainer):
     labels mask the parts we don't want to predict.
     """
     
-    def __init__(self, tokenizer_gen, generation_config=None, 
-                 assistant_token="<|im_start|>assistant\n", debug=False, **kwargs):
+    def __init__(self, tokenizer_gen, generation_config=None,
+                 assistant_token="<|im_start|>assistant\n", debug=False,
+                 gen_batch_size=1, **kwargs):
         super().__init__(**kwargs)
         self.tokenizer_gen = tokenizer_gen
         self.assistant_token = assistant_token
         self.debug = debug
+        # 1 = legacy per-sample generation; >1 = left-padded batched generation
+        # with identical generate kwargs (D-028c; bf16 batching may change rare
+        # beam ties — one batch size per model, pinned in the manifest)
+        self.gen_batch_size = gen_batch_size
         
         # Set up generation config
         if generation_config is None:
@@ -79,13 +122,9 @@ class LLMCustomTrainer(Trainer):
         if self.tokenizer_gen is None:
             raise ValueError("ERROR: tokenizer cannot be None for LLMCustomTrainer!")
         
-        # Load metrics with error handling
+        # Load metrics with error handling (fail fast at trainer construction)
         try:
-            self.bleu_metric = evaluate.load("bleu")
-            self.exact_match_metric = evaluate.load("exact_match")
-            self.rouge_metric = evaluate.load("rouge")
-            self.bert_score_metric = evaluate.load("bertscore")
-            self.meteor_metric = evaluate.load("meteor")
+            preload_metrics()
         except Exception as e:
             raise RuntimeError(f"ERROR: Failed to load evaluation metrics: {e}")
         
@@ -159,16 +198,47 @@ class LLMCustomTrainer(Trainer):
         
         return prompt_ids, reference_text
     
+    def _generate_batched(self, prompt_ids_list):
+        """Generate for a chunk of prompts: left-pad to the chunk max length,
+        run one generate call with the same config, trim the shared prompt
+        length per row. Masking `!= pad` replicates the per-sample path
+        exactly: it passes no mask, and generate() infers `input_ids.ne(pad)`
+        because pad != eos for the qwen tokenizers — so each row's own left
+        padding is masked out there too."""
+        pad_id = self.tokenizer_gen.pad_token_id
+        if pad_id is None:
+            pad_id = self.tokenizer_gen.eos_token_id
+        max_len = max(p.shape[0] for p in prompt_ids_list)
+        # The Trainer's eval dataloader has already moved prompts to the GPU; pad on the
+        # same device.
+        batch = torch.stack([
+            torch.cat([torch.full((max_len - p.shape[0],), pad_id, dtype=p.dtype, device=p.device), p])
+            for p in prompt_ids_list
+        ]).to(self.args.device)
+        attention_mask = (batch != pad_id).long()
+        generated = self.model.generate(
+            input_ids=batch,
+            attention_mask=attention_mask,
+            **self.generation_config.to_dict()
+        )
+        texts = []
+        for row in generated[:, max_len:]:
+            texts.append(self.tokenizer_gen.decode(row, skip_special_tokens=True).strip())
+        return texts
+
     def _compute_generation_metrics(self, dataset):
         """Compute BLEU-4 and exact match by generating text"""
         if self.debug:
             logger.info(f"Computing BLEU metrics for {len(dataset)} samples...")
-            
+
         self.model.eval()
         predictions = []
         references = []
         failed_samples = 0
-        
+
+        if self.gen_batch_size > 1:
+            return self._compute_generation_metrics_batched(dataset)
+
         eval_dataloader = self.get_eval_dataloader(dataset)
         
         with torch.no_grad():
@@ -208,7 +278,7 @@ class LLMCustomTrainer(Trainer):
                             pred_text = ""
                         
                         # Clean up
-                        pred_text = pred_text if pred_text else "<EMPTY>"
+                        pred_text = guard_empty(pred_text)
                         
                         if self.debug:
                             print(f"Input text: '{self.tokenizer_gen.decode(prompt_ids, skip_special_tokens=True)}'")
@@ -232,64 +302,53 @@ class LLMCustomTrainer(Trainer):
         if failed_samples > total_samples * 0.5:  # More than 50% failed
             raise RuntimeError(f"CRITICAL: {failed_samples}/{total_samples} samples failed! Check your data format.")
         
-        # Compute metrics
+        # Compute metrics (single shared implementation, frozen semantics)
         try:
-            bleu_score = self.bleu_metric.compute(
-                predictions=predictions,
-                references=[[ref] for ref in references]
-            )["bleu"]
+            metric_values = compute_generation_metrics(predictions, references)
         except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute BLEU: {e}")
-        
-        try:
-            exact_match_score = self.exact_match_metric.compute(
-                predictions=predictions,
-                references=references
-            )["exact_match"]
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute exact match: {e}")
-        
-        # Compute ROUGE score (multiple scores)
-        try:
-            rouge_score = self.rouge_metric.compute(
-                predictions=predictions,
-                references=references,
-                use_stemmer=True
-            )
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute ROUGE: {e}")
-        
-        # Compute BERTScore (multiple scores)
-        try:
-            bertscore = self.bert_score_metric.compute(
-                predictions=predictions,
-                references=references,
-                lang="en"
-            )
-            bertscore = {
-                "precision": sum(bertscore["precision"]) / len(bertscore["precision"]),
-                "recall": sum(bertscore["recall"]) / len(bertscore["recall"]),
-                "f1": sum(bertscore["f1"]) / len(bertscore["f1"])
-            }
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute BERTScore: {e}")
-        
-        # Compute METEOR score
-        try:
-            meteor_score = self.meteor_metric.compute(
-                predictions=predictions,
-                references=references
-            )["meteor"]
-        except Exception as e:
-            raise RuntimeError(f"ERROR: Failed to compute METEOR: {e}")
-        
-        logger.info(f"BLEU-4: {bleu_score:.4f}, Exact Match: {exact_match_score:.4f}")
-        logger.info(f"ROUGE-L: {rouge_score['rougeL']:.4f}, BERTScore-F1: {bertscore['f1']:.4f}, METEOR: {meteor_score:.4f}")
-        
-        return {
-            "eval_bleu_4": bleu_score,
-            "eval_exact_match": exact_match_score,
-            "eval_rouge": rouge_score,
-            "eval_bertscore": bertscore,
-            "eval_meteor": meteor_score
-        }
+            raise RuntimeError(f"ERROR: Failed to compute metrics: {e}")
+
+        logger.info(f"BLEU-4: {metric_values['bleu_4']:.4f}, Exact Match: {metric_values['exact_match']:.4f}")
+        logger.info(f"ROUGE-L: {metric_values['rouge']['rougeL']:.4f}, BERTScore-F1: {metric_values['bertscore']['f1']:.4f}, METEOR: {metric_values['meteor']:.4f}")
+
+        return as_eval_results(metric_values)
+
+    def _compute_generation_metrics_batched(self, dataset):
+        """Batched variant of the generation loop (gen_batch_size > 1): same
+        prompt extraction and metrics, generation in left-padded chunks. A row
+        whose assistant token was truncated away scores as "<FAILED>" against an
+        empty reference, as in the per-sample loop, which also aborts above 50%."""
+        prompts, references, failed = [], [], set()
+        eval_dataloader = self.get_eval_dataloader(dataset)
+        for batch in eval_dataloader:
+            labels = batch.get("labels")
+            if labels is None:
+                raise RuntimeError("ERROR: No 'labels' key found in batch! Check your data collator.")
+            for i in range(batch["input_ids"].shape[0]):
+                try:
+                    prompt_ids, reference_text = self._extract_prompt_and_reference(
+                        batch["input_ids"][i], labels[i]
+                    )
+                except RuntimeError as e:
+                    if self.debug:
+                        logger.warning(f"WARNING: Failed sample {len(references)}: {e}")
+                    failed.add(len(references))
+                    prompt_ids, reference_text = None, ""
+                prompts.append(prompt_ids)
+                references.append(reference_text)
+        if len(failed) > len(references) * 0.5:
+            raise RuntimeError(f"CRITICAL: {len(failed)}/{len(references)} samples failed! Check your data format.")
+
+        valid = [p for p in prompts if p is not None]
+        generated = []
+        with torch.no_grad():
+            for start in tqdm(range(0, len(valid), self.gen_batch_size),
+                              desc=f"Evaluating (batched x{self.gen_batch_size})"):
+                chunk = valid[start:start + self.gen_batch_size]
+                generated.extend(guard_empty(t) for t in self._generate_batched(chunk))
+        generated = iter(generated)
+        predictions = ["<FAILED>" if i in failed else next(generated) for i in range(len(prompts))]
+
+        metric_values = compute_generation_metrics(predictions, references)
+        logger.info(f"BLEU-4: {metric_values['bleu_4']:.4f}, Exact Match: {metric_values['exact_match']:.4f}")
+        return as_eval_results(metric_values)

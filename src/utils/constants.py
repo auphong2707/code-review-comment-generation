@@ -9,15 +9,22 @@ load_dotenv()
 
 # [0. GENERAL CONSTANTS]
 # -----------------------------------------------------------------------------------
-RESULTS_DIR                 = "./results-cc/"
+# All run artifacts live under assets/ (gitignored): results, logs, wandb, HF cache.
+ASSETS_DIR                  = "assets/"
+DATA_DIR                    = ASSETS_DIR + "data/"
+MODELS_DIR                  = ASSETS_DIR + "models/"      # produced HPC artifacts (read-only)
+RESULTS_DIR                 = ASSETS_DIR + "results/"     # local training/ICL outputs
+LOGS_DIR                    = ASSETS_DIR + "logs/"        # run_training.sh console logs
+WANDB_DIR                   = ASSETS_DIR + "wandb/"       # wandb run dirs
+CACHE_DIR                   = ASSETS_DIR + "cache/"       # HF_HOME default
 LOGGING_STEPS               = 5
 SEED                        = 42
 
 DATASET_NAME                = "acra_by_ls_pt" # Can be: acra_by_ls_pt or trans_review
 HUGGINGFACE_DATASET_ID      = "your-huggingface-username/acra-by-ls-pt-dataset" # Update with your actual dataset ID
-TRAIN_DATA_DIR              = 'data/Comment_Generation/msg-train.jsonl'
-VAL_DATA_DIR                = 'data/Comment_Generation/msg-valid.jsonl'
-TEST_DATA_DIR               = 'data/Comment_Generation/msg-test.jsonl'
+TRAIN_DATA_DIR              = DATA_DIR + 'Code_Review/msg-train.jsonl'
+VAL_DATA_DIR                = DATA_DIR + 'Code_Review/msg-valid.jsonl'
+TEST_DATA_DIR               = DATA_DIR + 'Code_Review/msg-test.jsonl'
 
 INPUT_MAX_LENGTH            = 512
 OUTPUT_MAX_LENGTH           = 256
@@ -105,6 +112,20 @@ WEIGHT_DECAY_QWEN25_0_5B         = 0.01
 
 
 
+# [5b. QWEN Qwen-2.5-Coder-14B-Instruct HYPERPARAMETERS (revision, D-022)]
+#-------------------------------------------------------------------------
+MODEL_QWEN25_14B                = "Qwen/Qwen2.5-Coder-14B-Instruct"
+TOKENIZER_QWEN25_14B            = MODEL_QWEN25_14B
+RESULTS_DIR_QWEN25_14B          = RESULTS_DIR + "qwen25-14b/"
+
+TRAIN_BATCH_SIZE_QWEN25_14B     = 1
+EVAL_BATCH_SIZE_QWEN25_14B      = 1
+NUM_TRAIN_EPOCHS_QWEN25_14B     = 3
+WEIGHT_DECAY_QWEN25_14B         = 0.01
+#-------------------------------------------------------------------------
+
+
+
 # [6. PEFT HYPERPARAMETERS]
 #-------------------------------------------------------------------------
 NUM_VIRTUAL_TOKENS          = 100
@@ -115,4 +136,50 @@ ALPHA_LORA                  = 16
 
 RANK_QLORA                  = 16
 ALPHA_QLORA                 = 16
+#-------------------------------------------------------------------------
+
+
+
+# [7. DATASET REGISTRY]
+#-------------------------------------------------------------------------
+# Per-dataset column/prompt/path configuration. DATASET_NAME above stays the
+# default; scripts accept --dataset to select one explicitly.
+DATASET_CONFIGS = {
+    "trans_review": {
+        "input_column": "code_tokens",
+        "target_column": "docstring_tokens",
+        "join_tokens": True,           # columns are token lists, joined with spaces
+        "prompt_suffix": "",           # prompt header reads "Code:"
+        "data_files": {
+            "train": "assets/data/Trans_Review/train.jsonl",
+            "validation": "assets/data/Trans_Review/val.jsonl",
+            "test": "assets/data/Trans_Review/test.jsonl",
+        },
+    },
+    "acra_by_ls_pt": {
+        "input_column": "patch",
+        "target_column": "msg",
+        "join_tokens": False,
+        "prompt_suffix": " changes",   # prompt header reads "Code changes:"
+        "data_files": {
+            "train": TRAIN_DATA_DIR,
+            "validation": VAL_DATA_DIR,
+            "test": TEST_DATA_DIR,
+        },
+    },
+}
+
+
+def get_dataset_config(name):
+    try:
+        return DATASET_CONFIGS[name]
+    except KeyError:
+        raise ValueError(
+            f"Unknown dataset: {name}; expected one of {sorted(DATASET_CONFIGS)}"
+        ) from None
+
+
+def is_placeholder_repo(repo_id):
+    """True for the shipped 'your-huggingface-username/...' placeholder ids."""
+    return isinstance(repo_id, str) and repo_id.startswith("your-huggingface-username/")
 #-------------------------------------------------------------------------

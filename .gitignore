@@ -173,8 +173,47 @@ cython_debug/
 # Json Lines file
 *.jsonl
 
-# Trained models
-/my_model/*
+# All run artifacts (data, weights, results, logs, wandb, HF cache) live under assets/
+assets/
+AGENTS.md
+**PROMPTS.md
 
-# Results folder
+# --- AI agent infrastructure (local only, never published) ---
+# Instructions, skills, rules, commands, hooks and plans for any coding agent, at any depth.
+CLAUDE.md
+CLAUDE.local.md
+**/CLAUDE.md
+**/CLAUDE.local.md
+**/AGENTS.md
+**/AGENTS.override.md
+**/GEMINI.md
+.claude/
+**/.claude/
+.mcp.json
+.agents/
+.codex/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.clinerules
+.clinerules/
+.roo/
+.kiro/
+.gemini/
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+**/skills/
+**/SKILL.md
+*.skill
+/ai/
+/docs/ai/
+/plans/
+/scripts/ai/
+
+# Legacy output dirs (pre-assets layout) — kept so stale checkouts stay clean
 results/
+results-cc/
+wandb/
+/SOURCE_COMMIT

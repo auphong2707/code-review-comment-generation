@@ -17,9 +17,11 @@ if [ -z "$MODEL" ] || [ -z "$METHOD" ]; then
   echo "Usage:"
   echo "  SWEEP: $0 <model> <method> sweep <start_exp> <end_exp> [subset=1]"
   echo "  FIXED: $0 <model> <method> fixed <learning_rate> [subset=1]"
-  echo "  Legacy auto-detect also supported."
-  echo "Models: codet5, plbart, qwen15, qwen25, qwen25-0.5b"
-  echo "Methods: fmft, ia3, lora, qlora"
+  echo "Models: codet5, plbart, qwen15, qwen25, qwen25-0.5b, qwen25-14b"
+  echo "Methods: fmft, ia3, lora, qlora, ptuning, dora, galore"
+  echo "Env: TRAIN_DRY_RUN=1 to print the resolved config without training"
+  echo "     TRAIN_EXTRA_ARGS to forward extra src.train flags, e.g."
+  echo "     TRAIN_EXTRA_ARGS=\"--dataset trans_review --seed 1 --results-root assets/results/revision/trans_review/\""
   exit 1
 fi
 
@@ -30,22 +32,27 @@ is_number()  { [[ "$1" =~ ^[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; }
 # Defaults
 SUBSET_DEFAULT=1
 
-# Set Python path to include src directory and current directory
-export PYTHONPATH="${PYTHONPATH}:$(pwd):$(pwd)/src"
+# Set Python path to include the project root
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+
+# All run artifacts go under assets/ (gitignored): results, logs, wandb, HF cache
+export WANDB_DIR="${WANDB_DIR:-$(pwd)/assets/wandb}"
+export HF_HOME="${HF_HOME:-$(pwd)/assets/cache/huggingface}"
+LOG_DIR="$(pwd)/assets/logs"
+mkdir -p "$WANDB_DIR" "$HF_HOME" "$LOG_DIR"
 
 case "$MODEL" in
-  "codet5") MODEL_DIR="codet5"; SCRIPT_PREFIX="ct5" ;;
-  "plbart") MODEL_DIR="plbart"; SCRIPT_PREFIX="plbart" ;;
-  "qwen15") MODEL_DIR="qwen15"; SCRIPT_PREFIX="qwen15" ;;
-  "qwen25") MODEL_DIR="qwen25"; SCRIPT_PREFIX="qwen25" ;;
-  "qwen25-0.5b") MODEL_DIR="qwen25-0.5b-instruct"; SCRIPT_PREFIX="qwen25_0.5b" ;;
+  "codet5"|"plbart"|"qwen15"|"qwen25"|"qwen25-0.5b"|"qwen25-14b") ;;
   *) echo "Invalid model: $MODEL"; exit 1 ;;
 esac
 
-SCRIPT_PATH="src/models/$MODEL_DIR/main_${SCRIPT_PREFIX}_${METHOD}.py"
-if [ ! -f "$SCRIPT_PATH" ]; then
-  echo "Script not found: $SCRIPT_PATH"
-  exit 1
+# Dispatch to the unified training entry point (replaces src/models/*/main_*.py)
+BASE_CMD="python -m src.train --model \"$MODEL\" --method \"$METHOD\""
+if [ -n "$TRAIN_DRY_RUN" ]; then
+  BASE_CMD="$BASE_CMD --dry-run"
+fi
+if [ -n "${TRAIN_EXTRA_ARGS:-}" ]; then
+  BASE_CMD="$BASE_CMD $TRAIN_EXTRA_ARGS"
 fi
 
 run_single() {
@@ -53,13 +60,15 @@ run_single() {
   local lr_val="$2"   # may be empty (None)
   echo "-----------------------------------------"
   echo "Running single: subset=${subset_val}, lr=${lr_val:-default}"
-  CMD="python \"$SCRIPT_PATH\" --subset \"$subset_val\""
+  CMD="$BASE_CMD --subset \"$subset_val\""
   if [ -n "$lr_val" ]; then
     CMD="$CMD --learning_rate \"$lr_val\""
   fi
   echo "CMD: $CMD"
-  eval $CMD
-  return $?
+  local log_file="$LOG_DIR/${MODEL}_${METHOD}_${MODE}_$(date +%Y%m%d_%H%M%S).log"
+  echo "LOG: $log_file"
+  eval $CMD 2>&1 | tee "$log_file"
+  return ${PIPESTATUS[0]}
 }
 
 run_experiment() {
@@ -71,7 +80,7 @@ run_experiment() {
   echo "Subset: ${subset_val} | LR: (handled in Python sweep)"
   echo "========================================="
 
-  CMD="python \"$SCRIPT_PATH\" --experiment_id \"$exp_num\" --subset \"$subset_val\""
+  CMD="$BASE_CMD --experiment_id \"$exp_num\" --subset \"$subset_val\""
 
   echo "CMD: $CMD"
   eval $CMD
