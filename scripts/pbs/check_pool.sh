@@ -11,7 +11,7 @@ mkdir -p "$scratch/bin" "$scratch/pre/admissions"
 export RCG_ROOT="$ROOT" RCG_PREFLIGHT_ROOT="$scratch/pre" RCG_QSTAT="$scratch/bin/qstat" RCG_POOL_ALLOW_LOCAL=1
 export RCG_POOL_NVIDIA_SMI=/bin/false RCG_POOL_GPUS=0,1 RCG_POOL_POLL=0.05 RCG_POOL_LAUNCH_GAP=0 RCG_POOL_MARGIN=1 RCG_POOL_GRACE=2
 export RCG_POOL_TASK_CMD="bash $scratch/task.sh" EVENTS="$scratch/events" FAKE="$scratch"
-unset PBS_JOBID CUDA_VISIBLE_DEVICES
+unset PBS_JOBID CUDA_VISIBLE_DEVICES SLURM_JOB_ID SLURM_JOB_NAME SLURM_GPUS_ON_NODE SLURM_CPUS_PER_TASK SLURM_CPUS_ON_NODE SLURM_SUBMIT_DIR
 
 # Pilot peaks: training 30 GiB (cost 32, two per GPU), ICL 10, judges 5.
 bash scripts/pbs/pool_deps.sh > "$scratch/deps"
@@ -239,6 +239,58 @@ reset
 printf '701.fake R\n' > "$scratch/jobstates"; echo '    Resource_List.ngpus = 1' > "$scratch/qstat-extra"
 rc=$(unset RCG_POOL_GPUS; CUDA_VISIBLE_DEVICES=0,1 PBS_JOBID=701.fake RCG_POOL_SECONDS=3 run_pool)
 [[ "$rc" == 2 ]] && grep -q 'do not match the allocation' "$scratch/pool.out" || fail "GPU/allocation mismatch accepted"
+
+# 5s. Slurm allocation: time left from squeue %L ([D-]HH:MM:SS, MM:SS), GPU count from
+#     SLURM_GPUS_ON_NODE, lease liveness from squeue then sacct (dead only on evidence).
+cat > "$scratch/bin/squeue" <<'EOF'
+#!/usr/bin/env bash
+while (( $# )); do case "$1" in -j) id="$2"; shift 2 ;; -o) fmt="$2"; shift 2 ;; *) shift ;; esac; done
+grep -qx "$id" "$FAKE/squeue-down" 2>/dev/null && { echo "squeue: error: Unable to contact slurm controller" >&2; exit 1; }
+grep -qx "$id" "$FAKE/squeue-invalid" 2>/dev/null && { echo "slurm_load_jobs error: Invalid job id specified" >&2; exit 1; }
+if [[ "$fmt" == %L ]]; then cat "$FAKE/squeue-left"; else awk -v j="$id" '$1 == j {print $2}' "$FAKE/squeue-states" 2>/dev/null; fi
+EOF
+cat > "$scratch/bin/sacct" <<'EOF'
+#!/usr/bin/env bash
+while (( $# )); do case "$1" in -j) id="$2"; shift 2 ;; *) shift ;; esac; done
+awk -v j="$id" '$1 == j {$1 = ""; sub(/^ /, ""); print}' "$FAKE/sacct-states" 2>/dev/null
+EOF
+chmod +x "$scratch/bin/squeue" "$scratch/bin/sacct"
+slurm_pool() { RCG_SQUEUE="$scratch/bin/squeue" RCG_SACCT="$scratch/bin/sacct" SLURM_JOB_ID=800 run_pool; }
+slurm_reset() { reset; rm -f "$scratch"/squeue-* "$scratch/sacct-states"; echo "800 RUNNING" > "$scratch/squeue-states"; }
+slurm_reset; echo "00:04" > "$scratch/squeue-left"; echo slow > "$scratch/mode/default"
+[[ $(unset RCG_POOL_SECONDS; slurm_pool) == 75 ]] || fail "Slurm pool must stop at the squeue time left (75)"
+grep -q 'incomplete' "$scratch/pool.out" && [[ -z "$(ls -A "$scratch/state/failed")" ]] || fail "Slurm stop did not checkpoint"
+slurm_reset; echo "2-01:00:00" > "$scratch/squeue-left"
+mkdir -p "$scratch/state"; touch "$scratch/state/stop"      # log the deadline, then drain at once
+want=$(( $(date +%s) + 2 * 86400 + 3600 - 1 ))
+[[ $(unset RCG_POOL_SECONDS; slurm_pool) == 75 ]] || fail "stopped Slurm pool exit"
+stop_at=$(grep -oE 'stop_at=[0-9-]+ [0-9:]+' "$scratch/pool.out" | head -1 | cut -d= -f2)
+diff=$(( $(date -d "$stop_at" +%s) - want ))
+(( diff >= -10 && diff <= 10 )) || fail "Slurm D-HH:MM:SS deadline off by ${diff}s ($stop_at)"
+slurm_reset; echo "garbage" > "$scratch/squeue-left"
+[[ $(unset RCG_POOL_SECONDS; slurm_pool) == 2 ]] && grep -q 'Cannot read the time left' "$scratch/pool.out" || fail "unparsable squeue time accepted"
+slurm_reset; echo "09:08:07" > "$scratch/squeue-left"; mkdir -p "$scratch/state"; touch "$scratch/state/stop"
+want=$(( $(date +%s) + 9 * 3600 + 8 * 60 + 7 - 1 ))
+[[ $(unset RCG_POOL_SECONDS; slurm_pool) == 75 ]] || fail "stopped Slurm pool exit (HH:MM:SS)"
+stop_at=$(grep -oE "stop_at=[0-9-]+ [0-9:]+" "$scratch/pool.out" | head -1 | cut -d= -f2)
+diff=$(( $(date -d "$stop_at" +%s) - want )); (( diff >= -10 && diff <= 10 )) || fail "Slurm 09:08:07 deadline off by ${diff}s"
+slurm_reset
+rc=$(unset RCG_POOL_GPUS; CUDA_VISIBLE_DEVICES=0,1 SLURM_GPUS_ON_NODE=1 RCG_POOL_SECONDS=3 slurm_pool)
+[[ "$rc" == 2 ]] && grep -q 'do not match the allocation (ngpus=1)' "$scratch/pool.out" || fail "Slurm GPU mismatch accepted"
+slurm_reset
+rc=$(unset RCG_POOL_GPUS; CUDA_VISIBLE_DEVICES=0,1 SLURM_GPUS_ON_NODE=2 RCG_POOL_SECONDS=3 slurm_pool)
+[[ "$rc" != 2 ]] && grep -q 'gpus=0 1 ' "$scratch/pool.out" || fail "matching Slurm GPUs refused (rc $rc)"
+slurm_reset
+for id in 1 2 3 4 5 6 7 8; do mkdir -p "$scratch/state/lease/$id"; done
+for pair in '1 901' '2 902' '3 903' '4 904' '5 905' '6 906' '7 907' '8 908'; do read -r id owner <<< "$pair"; echo "$owner host 1 0" > "$scratch/state/lease/$id/owner"; done
+printf '800 RUNNING\n902 RUNNING\n908 COMPLETED\n' > "$scratch/squeue-states"     # 902 alive; 908 listed but ended
+printf '903\n906\n' > "$scratch/squeue-invalid"; echo 904 > "$scratch/squeue-down"   # 906: purged, no accounting; 907: unlisted, no record
+printf '901 COMPLETED\n903 CANCELLED by 1234\n905 RUNNING\n' > "$scratch/sacct-states"   # 905: left squeue, sacct still running
+rc=$(RCG_POOL_SECONDS=3 slurm_pool)
+grep -q "reclaim lease 1 from 901" "$scratch/pool.out" && grep -q "reclaim lease 3 from 903" "$scratch/pool.out" &&
+    grep -q "reclaim lease 6 from 906" "$scratch/pool.out" && grep -q "reclaim lease 8 from 908" "$scratch/pool.out" ||
+    fail "finished Slurm owners' leases not reclaimed"
+[[ -d "$scratch/state/lease/2" && -d "$scratch/state/lease/4" && -d "$scratch/state/lease/5" && -d "$scratch/state/lease/7" ]] || fail "Slurm lease freed without evidence"
 
 # 6. A task that ignores USR1 is killed with its whole tree (setsid child included) and is
 #    left incomplete, not failed.

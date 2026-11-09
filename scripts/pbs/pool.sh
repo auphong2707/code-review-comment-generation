@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Parallel revision pool: runs the chunks.sh inventory in dependency order inside one
-# PBS allocation, packing tasks onto its GPUs by measured pilot memory. Each task is the
+# PBS or Slurm allocation, packing tasks onto its GPUs by measured pilot memory. Each task is the
 # unchanged `run_chunk.sh --body` command with exactly one visible GPU. Before the
 # walltime it checkpoints every task (USR1, exit 75) and leaves the rest for the next
 # pool job; state lives on the shared filesystem so any later pool continues.
 # Exit: 0 all done, 75 work remains, 1 only failed/blocked work remains.
 set -uo pipefail
-ROOT="${RCG_ROOT:-${PBS_O_WORKDIR:?Submit from the repository root}}"
+ROOT="${RCG_ROOT:-${PBS_O_WORKDIR:-${SLURM_SUBMIT_DIR:?Submit from the repository root}}}"
 cd "$ROOT" || exit 2
 [[ -f scripts/pbs/run_chunk.sh ]] || { echo "Not a repository root: $ROOT" >&2; exit 2; }
 export RCG_ROOT="$ROOT"
@@ -14,12 +14,16 @@ if [[ "${DRY:-0}" == 1 ]]; then    # preview only: never touch pool state or sta
     echo "Pool preview: $(bash scripts/pbs/pool_deps.sh | wc -l) tasks in dependency order (scripts/pbs/pool_deps.sh)"
     exit 0
 fi
-[[ -n "${PBS_JOBID:-}" || "${RCG_POOL_ALLOW_LOCAL:-0}" == 1 ]] || {
-    echo "Run the pool through PBS (scripts/pbs/submit_pool.sh); DRY=1 previews" >&2; exit 2; }
+[[ -n "${PBS_JOBID:-}${SLURM_JOB_ID:-}" || "${RCG_POOL_ALLOW_LOCAL:-0}" == 1 ]] || {
+    echo "Run the pool inside a PBS or Slurm job; DRY=1 previews" >&2; exit 2; }
+# Scheduler of this job (and of every lease owner: one campaign runs on one cluster).
+SCHED=local
+[[ -z "${PBS_JOBID:-}" ]] || SCHED=pbs
+[[ -z "${SLURM_JOB_ID:-}" ]] || SCHED=slurm
 
 STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 ADMISSIONS="${RCG_PREFLIGHT_ROOT:-$ROOT/assets/results/a100-native-preflight}/admissions"
-JOB="${PBS_JOBID:-local-$$}"
+case "$SCHED" in pbs) JOB="$PBS_JOBID" ;; slurm) JOB="$SLURM_JOB_ID" ;; *) JOB="local-$$" ;; esac
 LOGS="${RCG_POOL_LOG_ROOT:-$ROOT/assets/logs/a100/pool}/${JOB%%.*}"
 BUDGET="${RCG_POOL_BUDGET_GIB:-70}"          # of 80 GiB; admission policy caps a task at 76
 CONTEXT="${RCG_POOL_CONTEXT_GIB:-2}"         # CUDA context + allocator slack per process
@@ -30,6 +34,7 @@ MARGIN="${RCG_POOL_MARGIN:-1800}"            # stop launching/checkpoint this lo
 GRACE="${RCG_POOL_GRACE:-1200}"              # wait this long for tasks to commit checkpoints
 TASK_CMD="${RCG_POOL_TASK_CMD:-bash scripts/pbs/run_chunk.sh --body}"
 QSTAT="${RCG_QSTAT:-$(command -v qstat || echo /opt/pbs/bin/qstat)}"
+SQUEUE="${RCG_SQUEUE:-squeue}" SACCT="${RCG_SACCT:-sacct}"
 mkdir -p "$STATE"/{done,failed,lease,exclusive,defer} "$LOGS"
 log() { printf '%s pool %s: %s\n' "$(date '+%F %T')" "${JOB%%.*}" "$*"; }
 
@@ -69,9 +74,10 @@ if [[ -n "${RCG_POOL_GPUS:-}" ]]; then IFS=, read -ra GPUS <<< "$RCG_POOL_GPUS"
 elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then IFS=, read -ra GPUS <<< "$CUDA_VISIBLE_DEVICES"
 else mapfile -t GPUS < <(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null); fi
 (( ${#GPUS[@]} )) || { echo "No GPU visible to the pool" >&2; exit 2; }
-if [[ -n "${PBS_JOBID:-}" && -z "${RCG_POOL_GPUS:-}" ]]; then
+if [[ "$SCHED" != local && -z "${RCG_POOL_GPUS:-}" ]]; then
     # Never pack onto GPUs this job was not allocated (the node is shared).
-    granted=$("$QSTAT" -f "$PBS_JOBID" 2>/dev/null | awk '$1 == "Resource_List.ngpus" {print $3}')
+    if [[ "$SCHED" == slurm ]]; then granted="${SLURM_GPUS_ON_NODE:-}"
+    else granted=$("$QSTAT" -f "$PBS_JOBID" 2>/dev/null | awk '$1 == "Resource_List.ngpus" {print $3}'); fi
     [[ "$granted" =~ ^[0-9]+$ && "$granted" == "${#GPUS[@]}" ]] || {
         echo "Visible GPUs (${GPUS[*]}) do not match the allocation (ngpus=${granted:-unknown})" >&2; exit 2; }
 fi
@@ -116,13 +122,27 @@ refresh_foreign() {
     done
     foreign_checked=$(date +%s)
 }
-THREADS="${RCG_POOL_THREADS:-$(( ${NCPUS:-8} / (${#GPUS[@]} * MAX_PER_GPU) ))}"
+THREADS="${RCG_POOL_THREADS:-$(( ${NCPUS:-${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-8}}} / (${#GPUS[@]} * MAX_PER_GPU) ))}"
 (( THREADS >= 1 )) || THREADS=1
 
 # ---- deadline ----------------------------------------------------------------
 to_seconds() { [[ "$1" =~ ^([0-9]+):([0-5][0-9]):([0-5][0-9])$ ]] || return 1
                echo $((10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]})); }
+slurm_seconds() {
+    local days=0 t="$1" h=0 m=0 s=0
+    [[ "$t" =~ ^([0-9]+)-(.+)$ ]] && { days=$((10#${BASH_REMATCH[1]})); t="${BASH_REMATCH[2]}"; }
+    if [[ "$t" =~ ^([0-9]+):([0-5][0-9]):([0-5][0-9])$ ]]; then h=${BASH_REMATCH[1]}; m=${BASH_REMATCH[2]}; s=${BASH_REMATCH[3]}
+    elif [[ "$t" =~ ^([0-9]+):([0-5][0-9])$ ]]; then m=${BASH_REMATCH[1]}; s=${BASH_REMATCH[2]}
+    elif [[ "$t" =~ ^[0-9]+$ ]]; then s="$t"
+    else return 1; fi
+    echo $(( days * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s ))
+}
 if [[ -n "${RCG_POOL_SECONDS:-}" ]]; then remaining="$RCG_POOL_SECONDS"
+elif [[ "$SCHED" == slurm ]]; then
+    # squeue %L: time left as [D-]HH:MM:SS, MM:SS or SS. UNLIMITED/NOT_SET give no deadline: refused.
+    left=$("$SQUEUE" -h -j "$SLURM_JOB_ID" -o %L 2>/dev/null | head -1 | tr -d ' ')
+    remaining=$(slurm_seconds "$left") || {
+        echo "Cannot read the time left for Slurm job $SLURM_JOB_ID (squeue: '${left}')" >&2; exit 2; }
 elif [[ -n "${PBS_JOBID:-}" ]]; then
     info=$("$QSTAT" -f "$PBS_JOBID" 2>/dev/null)
     limit=$(to_seconds "$(awk '$1 == "Resource_List.walltime" {print $3}' <<< "$info")") || {
@@ -138,6 +158,22 @@ job_alive() {   # dead only on positive evidence; a failing qstat must never fre
     local owner="$1" out state
     [[ "$owner" == "$JOB" ]] && return 0
     [[ "$owner" == local-* ]] && return 1
+    if [[ "$SCHED" == slurm ]]; then
+        local rc=0
+        out=$("$SQUEUE" -h -j "$owner" -o %T 2>&1) || rc=$?
+        # Still listed: pending/running/completing; a listed terminal state (kept for
+        # MinJobAge after the end) means it has ended.
+        if (( rc == 0 )) && [[ -n "$out" ]]; then
+            [[ "$out" =~ ^(COMPLETED|FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE) ]] && return 1
+            return 0
+        fi
+        # Gone from squeue (or purged: "Invalid job id"): the accounting record decides.
+        (( rc == 0 )) || [[ "$out" =~ [Ii]nvalid\ job\ id ]] || return 0
+        state=$("$SACCT" -n -X -P -j "$owner" -o State 2>/dev/null | head -1 | awk '{print $1}')
+        [[ "$state" =~ ^(COMPLETED|FAILED|CANCELLED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE)$ ]] && return 1
+        [[ -z "$state" && "$out" =~ [Ii]nvalid\ job\ id ]] && return 1
+        return 0
+    fi
     out=$("$QSTAT" -f "$owner" 2>&1)
     state=$(awk '$1 == "job_state" {print $3}' <<< "$out")
     [[ "$state" == F || "$state" == X ]] && return 1
