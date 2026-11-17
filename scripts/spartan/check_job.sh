@@ -7,9 +7,9 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 R="$scratch/repo" B="$scratch/bin"
-mkdir -p "$R/src" "$R/paper/generated" "$R/assets/data/Trans_Review" "$R/assets/data/Code_Review" "$B"
+mkdir -p "$R/src" "$R/paper/generated" "$R/assets/data/Trans_Review" "$R/assets/data/Code_Review" "$R/assets/models/llm-as-judge/table-results/inputs" "$B"
 cp -r "$REPO/scripts" "$R/"
-touch "$R/src/train.py" "$R/assets/data/Trans_Review/train.jsonl" "$R/assets/data/Code_Review/train.jsonl"
+touch "$R/src/train.py" "$R/assets/data/Trans_Review/train.jsonl" "$R/assets/data/Code_Review/train.jsonl" "$R/assets/models/llm-as-judge/table-results/inputs/x.jsonl"
 echo '[1]' > "$R/paper/generated/cr_judge_subset.json"
 export FAKE="$scratch" RCG_ROOT="$R" RCG_PYTHON="$B/python" RCG_SBATCH="$B/sbatch" RCG_SQUEUE="$B/squeue"
 export RCG_NVIDIA_SMI="$B/nvidia-smi" RCG_SKIP_INPUT_CHECK=1 HF_HOME="$scratch/hf-home"

@@ -35,7 +35,11 @@ rsync -av --partial \
   ./ spartan:/data/gpfs/projects/<punimXXXX>/code-review-comment-generation/
 ```
 
-Inputs the job checks in section 3:
+Inputs the job checks in section 3. The datasets (raw CodeReviewer/Zenodo and TransReview
+files) and the 54 legacy judge inputs are mirrored at these paths in the public HF dataset, and
+section 02 downloads any that are missing. If the compute node has no internet, fetch them on the
+login node with `bash scripts/spartan/revision.slurm --hf-sync-only`. Rsyncing them is optional.
+
 
 - `assets/data/Trans_Review/` and `assets/data/Code_Review/`.
 - `paper/generated/cr_judge_subset.json` (in the code).

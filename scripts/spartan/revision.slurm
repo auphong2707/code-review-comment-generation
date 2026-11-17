@@ -68,7 +68,10 @@ REL_RESULTS=$(relative "$RESULTS") && REL_JUDGES=$(relative "$JUDGES") &&
 # Resume state, locks and checkpoints never leave the cluster (same scope as the
 # 2026-11-03 push). Weights are not downloaded: no campaign step reads trained weights.
 EXCLUDE=('*/checkpoint-*' '*/.pool/*' '*.lock' '*/test_progress/*' '*.progress/*' '.cache/*')
-DOWNLOAD_INCLUDE=("$REL_RESULTS/*" "$REL_JUDGES/*")
+# Inputs (datasets, legacy judge inputs) are mirrored at their local paths; never re-pushed.
+INPUT_INCLUDE=("assets/data/Trans_Review/*" "assets/data/Code_Review/*"
+               "assets/models/llm-as-judge/table-results/inputs/*")
+DOWNLOAD_INCLUDE=("$REL_RESULTS/*" "$REL_JUDGES/*" "${INPUT_INCLUDE[@]}")
 DOWNLOAD_EXCLUDE=("${EXCLUDE[@]}")
 [[ "${RCG_HF_WEIGHTS:-0}" == 1 ]] || DOWNLOAD_EXCLUDE+=('*.safetensors' '*.bin' '*.pt' '*.pth')
 PUSH_INCLUDE=("$REL_RESULTS/*" "$REL_JUDGES/*" "$REL_TASK_LOGS/*" "$REL_LOGS/*")
@@ -214,6 +217,10 @@ sec_inputs() {
     for dir in assets/data/Trans_Review assets/data/Code_Review; do
         [[ -n "$(ls -A "$dir" 2>/dev/null)" ]] && echo "OK $dir" || { echo "MISSING $dir" >&2; rc=2; }
     done
+    [[ -n "$(ls -A assets/models/llm-as-judge/table-results/inputs 2>/dev/null)" ]] &&
+        echo "OK assets/models/llm-as-judge/table-results/inputs" ||
+        { echo "MISSING assets/models/llm-as-judge/table-results/inputs" >&2; rc=2; }
+    (( rc == 0 )) || echo "Fetch data/legacy inputs on the login node: bash scripts/spartan/revision.slurm --hf-sync-only" >&2
     [[ -s paper/generated/cr_judge_subset.json ]] && echo "OK paper/generated/cr_judge_subset.json" ||
         { echo "MISSING paper/generated/cr_judge_subset.json" >&2; rc=2; }
     source scripts/pool/check_judge_inputs.sh
