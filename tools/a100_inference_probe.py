@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.a100_preflight import runtime_digest, environment_identity, check_report, require_gpu, hardware_policy
 from src.training.recovery import atomic_json, install_stop_handlers, stop_if_requested
+from src.training.memory_profile import A100_ATTENTION_IMPLEMENTATIONS, DEFAULT_A100_ATTENTION
 
 JUDGES = {
     "qwen-judge": "assets/models/llm-judge/Qwen2.5-Coder-3B-Instruct",
@@ -25,7 +26,7 @@ def run_probe(args, digest):
     install_stop_handlers()
     if args.kind == "icl":
         from src.icl_inference import load_base_model_and_tokenizer
-        model, tokenizer = load_base_model_and_tokenizer(args.model, "sdpa")
+        model, tokenizer = load_base_model_and_tokenizer(args.model, args.attn_implementation)
         output_tokens, beams = 256, 3
     else:
         from src.llm_as_judge.config import JudgeConfig
@@ -69,6 +70,7 @@ def run_probe(args, digest):
     peak = torch.cuda.max_memory_reserved() / 2**30
     return {"runtime_digest": digest, "environment": environment_identity(), "hardware": hardware,
             "kind": args.kind, "model": args.model, "max_input_tokens": args.max_input_tokens,
+            "attn_implementation": getattr(model.config, "_attn_implementation", None),
             "max_output_tokens": output_tokens, "batch_size": args.batch_size, "num_beams": beams,
             "long_row_tokens": long_row,
             "model_revision": getattr(model.config, "_commit_hash", None),
@@ -84,12 +86,18 @@ def main(argv=None):
     parser.add_argument("--model", required=True)
     parser.add_argument("--out-root", required=True)
     parser.add_argument("--max-input-tokens", type=int)
+    parser.add_argument("--attn-implementation", choices=A100_ATTENTION_IMPLEMENTATIONS,
+                        help="Attention backend for ICL qualification")
     parser.add_argument("--batch-size", type=int, default=1,
                         help="Generation batch the campaign uses (ICL rows or judge rows per call)")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
     if args.kind == "icl" and args.model not in ICL_MODELS or args.kind == "judge" and args.model not in JUDGES:
         parser.error("Unsupported model for this probe kind")
+    if args.kind == "icl":
+        args.attn_implementation = args.attn_implementation or DEFAULT_A100_ATTENTION
+    elif args.attn_implementation is not None:
+        parser.error("--attn-implementation applies only to ICL")
     args.max_input_tokens = ((2048 if args.kind == "icl" else 4096)
                              if args.max_input_tokens is None else args.max_input_tokens)
     if args.max_input_tokens < 1 or args.kind == "icl" and args.max_input_tokens != 2048:
@@ -100,6 +108,8 @@ def main(argv=None):
     path = Path(args.out_root) / "admissions" / f"{args.kind}_{args.model}_{args.max_input_tokens}.json"
     expected = {"model": args.model, "kind": args.kind, "max_input_tokens": args.max_input_tokens,
                 "batch_size": args.batch_size}
+    if args.kind == "icl":
+        expected["attn_implementation"] = args.attn_implementation
     if args.check:
         check_report(json.loads(path.read_text()), digest, expected)
         print(f"Qualified: {args.kind}/{args.model}/{args.max_input_tokens} tokens")

@@ -39,6 +39,7 @@ from src.llm_as_judge.integration import (
 from src.icl import prompts as icl_prompts
 from src.icl.naming import icl_result_filename
 from src.icl.selection import BM25Selection, demo_seed_select, legacy_select
+from src.training.memory_profile import A100_ATTENTION_IMPLEMENTATIONS, DEFAULT_A100_ATTENTION
 
 
 def get_max_context_length(model) -> int:
@@ -711,11 +712,11 @@ def main():
             raise SystemExit("A100 ICL requires an explicit isolated --results_dir or --output_path")
         if args.batch_size < 1 or args.model_name not in ("qwen25", "qwen15", "qwen25-0.5b"):
             raise SystemExit("A100 ICL supports a positive batch on the three original causal models")
-        if args.attn_implementation not in (None, "sdpa"):
-            raise SystemExit("A100 ICL requires SDPA")
+        if args.attn_implementation not in (None, *A100_ATTENTION_IMPLEMENTATIONS):
+            raise SystemExit("A100 ICL supports --attn-implementation sdpa or eager")
         if judge_config is not None:
             raise SystemExit("Run the separate judge phase after A100 inference")
-        args.attn_implementation = "sdpa"
+        args.attn_implementation = args.attn_implementation or DEFAULT_A100_ATTENTION
         args.prompt_version = "v2"
         args.max_prompt_tokens = 2048 if args.max_prompt_tokens is None else args.max_prompt_tokens
         if not 1 <= args.max_prompt_tokens <= 2048:

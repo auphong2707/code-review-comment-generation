@@ -165,7 +165,9 @@ WANDB_MODE=offline python -m pytest
 
 Use `--attn-implementation eager` for local Qwen training and ICL, as in the
 examples above. The pinned Transformers release requires PyTorch 2.1.1 or newer
-for SDPA. Causal checkpoint re-evaluation requires a separate, compatible
+for SDPA. For the A100 revision campaign on this same stack, use
+`RCG_A100_ATTENTION=eager` and run its hardware admission first.
+Causal checkpoint re-evaluation requires a separate, compatible
 FlashAttention 2 installation. DeepSpeed workloads that compile CUDA extensions
 also need a matching CUDA 11.7 toolkit with `nvcc`.
 

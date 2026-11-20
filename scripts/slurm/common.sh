@@ -7,6 +7,11 @@ cd "$ROOT_DIR"
 DRY="${DRY:-0}"
 PYTHON="${RCG_PYTHON:-python}"
 export RCG_TARGET_GPU="${RCG_TARGET_GPU:-a100_80gb}"
+A100_ATTENTION="${RCG_A100_ATTENTION:-sdpa}"
+case "$A100_ATTENTION" in
+    sdpa|eager) ;;
+    *) echo "RCG_A100_ATTENTION must be sdpa or eager" >&2; exit 2 ;;
+esac
 REVISION_ROOT="${RCG_RESULTS_ROOT:-$ROOT_DIR/assets/results/revision-a100-native}"
 PREFLIGHT_ROOT="${RCG_PREFLIGHT_ROOT:-$ROOT_DIR/assets/results/a100-native-preflight}"
 # A100 profile generation batches: training validation/test generation (GEN_BS), ICL
@@ -34,7 +39,16 @@ if [[ "$DRY" != 1 ]]; then
         source "${CONDA_SH:?Set CONDA_SH when selecting RCG_CONDA_ENV}"
         set +u; conda activate "$RCG_CONDA_ENV"; set -u
     fi
-    "$PYTHON" -c 'from tools.a100_preflight import require_gpu; require_gpu()'
+    "$PYTHON" -c '
+from tools.a100_preflight import require_gpu
+import sys
+
+require_gpu()
+if sys.argv[1] == "sdpa":
+    from transformers.utils import is_torch_sdpa_available
+    if not is_torch_sdpa_available():
+        sys.exit("SDPA is unavailable in this environment. For PyTorch 2.0.1, set RCG_A100_ATTENTION=eager.")
+' "$A100_ATTENTION"
     export WANDB_DIR="${WANDB_DIR:-$LOG_ROOT/wandb}"
     export HF_HOME="${HF_HOME:-$ROOT_DIR/assets/cache/huggingface}"
     mkdir -p "$LOG_ROOT" "$WANDB_DIR"
@@ -97,7 +111,8 @@ require_training_admission() {
     local dataset="$1" model="$2" method="$3"
     if [[ "$DRY" != 1 ]]; then
         "$PYTHON" tools/a100_preflight.py --model "$model" --method "$method" \
-            --dataset "$dataset" --gen-batch-size "${GEN_BS[$model]}" --out-root "$PREFLIGHT_ROOT" --check
+            --dataset "$dataset" --gen-batch-size "${GEN_BS[$model]}" \
+            --attn-implementation "$A100_ATTENTION" --out-root "$PREFLIGHT_ROOT" --check
     fi
 }
 
@@ -107,7 +122,7 @@ train_official() {
     run_step "$label" "$PYTHON" -m src.train --model "$model" --method "$method" \
         --learning_rate "$lr" --dataset "$dataset" --results-root "$REVISION_ROOT/$dataset" \
         --protocol archived --memory-profile a100 --gen-batch-size "${GEN_BS[$model]}" \
-        --attn-implementation sdpa --recovery-steps "${RCG_RECOVERY_STEPS:-100}" --skip-if-complete "$@"
+        --attn-implementation "$A100_ATTENTION" --recovery-steps "${RCG_RECOVERY_STEPS:-100}" --skip-if-complete "$@"
 }
 
 train_sweep() {
@@ -118,7 +133,7 @@ train_sweep() {
         run_step "${label}_lr${id}" "$PYTHON" -m src.train --model "$model" --method "$method" \
             --experiment_id "$id" --subset "$subset" --dataset "$dataset" \
             --results-root "$REVISION_ROOT/$dataset/sweeps" --protocol archived \
-            --memory-profile a100 --gen-batch-size "${GEN_BS[$model]}" --attn-implementation sdpa \
+            --memory-profile a100 --gen-batch-size "${GEN_BS[$model]}" --attn-implementation "$A100_ATTENTION" \
             --recovery-steps "${RCG_RECOVERY_STEPS:-100}" --skip-if-complete "$@"
     done
 }
@@ -135,13 +150,14 @@ icl_run() {
     local label="$1" dataset="$2" model="$3"; shift 3
     if [[ "$DRY" != 1 ]] && selected "$label"; then
         "$PYTHON" tools/a100_inference_probe.py --kind icl --model "$model" \
-            --batch-size "${ICL_BS[$model]}" --out-root "$PREFLIGHT_ROOT" --check
+            --batch-size "${ICL_BS[$model]}" --attn-implementation "$A100_ATTENTION" \
+            --out-root "$PREFLIGHT_ROOT" --check
     fi
     # CodeReviewer ICL runs on the fixed 2,000-row subset the Llama judge also uses.
     local subset=(); [[ "$dataset" != acra_by_ls_pt ]] || subset=(--sample-index-file "$CR_SUBSET")
     run_step "$label" "$PYTHON" -m src.icl_inference --model_name "$model" --dataset "$dataset" \
         --prompt-version v2 --memory-profile a100 --batch-size "${ICL_BS[$model]}" --max-prompt-tokens 2048 \
-        --attn-implementation sdpa --results_dir "$REVISION_ROOT/icl/$dataset" "${subset[@]}" \
+        --attn-implementation "$A100_ATTENTION" --results_dir "$REVISION_ROOT/icl/$dataset" "${subset[@]}" \
         --skip-if-complete "$@"
 }
 

@@ -18,6 +18,20 @@ lines are not used by the pool.
 
 `common.sh` is the shared runtime (batch sizes, admissions, `run_step`).
 
+For the CUDA 11.7 `codereview` environment with PyTorch 2.0.1, set
+`RCG_A100_ATTENTION=eager` for the campaign, including its infrastructure task
+and completion checks. Use separate results, admissions, and judge roots when
+switching attention backends so existing results keep their original provenance.
+The shared campaign defaults to SDPA. Qualify the selected backend on the A100
+before starting the campaign.
+
+```bash
+export RCG_A100_ATTENTION=eager
+export RCG_RESULTS_ROOT="$PWD/assets/results/revision-a100-eager"
+export RCG_PREFLIGHT_ROOT="$PWD/assets/results/a100-eager-preflight"
+export RCG_JUDGE_ROOT="$PWD/assets/results/a100-eager-judges"
+```
+
 ## Local review: no Python
 
 Only Bash/static checks are permitted locally, including on the RTX 3090. Do not run
