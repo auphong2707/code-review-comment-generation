@@ -1,7 +1,7 @@
 # A100 80GB revision campaign definitions
 
 These six files define the campaign steps. On Spartan they are run by the single job
-file [`scripts/spartan/revision.slurm`](../spartan/README.md), not submitted one by one.
+file [`scripts/a100/revision.slurm`](../a100/README.md), not submitted one by one.
 Its pool (`scripts/pool/pool.sh`) splits them into 226 tasks (`scripts/pool/chunks.sh`),
 runs them in dependency order on the job's 1–4 A100s, and executes each step through
 `scripts/pool/run_chunk.sh`, which sources the matching file below. The `#SBATCH`
@@ -117,7 +117,7 @@ dependents.
 
 Use separate roots from earlier runs and frozen inputs. Training leaf names and
 result/judge schemas are unchanged. Judge roots remain separate by backend and
-legacy/revision input set. Job and section logs go to `assets/logs/spartan/` (scripts/spartan/README.md).
+legacy/revision input set. Job and section logs go to `assets/logs/spartan/` (scripts/a100/README.md).
 
 J checks A/B/C/D by default. Server-only completion command:
 

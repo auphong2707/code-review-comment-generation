@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local Bash-only checks of scripts/spartan/revision.slurm (not a job file): a scratch copy
+# Local Bash-only checks of scripts/a100/revision.slurm (not a job file): a scratch copy
 # of the repository scripts, fake sbatch/squeue/nvidia-smi/python/hf and a fake pool.
 # Nothing is submitted, downloaded or uploaded, and nothing is written under assets/.
 set -euo pipefail
@@ -15,7 +15,7 @@ export FAKE="$scratch" RCG_ROOT="$R" RCG_PYTHON="$B/python" RCG_SBATCH="$B/sbatc
 export RCG_NVIDIA_SMI="$B/nvidia-smi" RCG_SKIP_INPUT_CHECK=1 HF_HOME="$scratch/hf-home"
 export RCG_SPARTAN_POOL_CMD="bash $B/pool" RCG_SPARTAN_POLL=0.2 RCG_SPARTAN_PUSH_EVERY=0 RCG_SPARTAN_PROGRESS_EVERY=0
 unset SLURM_JOB_ID SLURM_JOB_NAME SLURM_GPUS_ON_NODE SLURM_CPUS_PER_TASK SLURM_CPUS_ON_NODE SLURM_SUBMIT_DIR PBS_JOBID CUDA_VISIBLE_DEVICES RCG_SPARTAN_ACCOUNT HF_TOKEN RCG_HF_SYNC
-JOB="$R/scripts/spartan/revision.slurm"
+JOB="$R/scripts/a100/revision.slurm"
 STATE="$R/assets/results/revision-a100-native/.pool"
 LOGS="$R/assets/logs/spartan"
 

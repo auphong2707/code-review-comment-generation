@@ -3,9 +3,9 @@
 This repository contains implementations for training various deep learning models for automated code review generation.
 
 The revision campaign runs on Spartan HPC (University of Melbourne, Slurm, A100 80GB) as one
-job file, `scripts/spartan/revision.slurm` (1–4 GPUs, default 2). Before running, the job
+job file, `scripts/a100/revision.slurm` (1–4 GPUs, default 2). Before running, the job
 checks the public Hugging Face results dataset, then runs the campaign, writes a log per
-section and pushes new results back. Setup and usage: [scripts/spartan/README.md](scripts/spartan/README.md).
+section and pushes new results back. Setup and usage: [scripts/a100/README.md](scripts/a100/README.md).
 
 ## Project Structure
 
@@ -142,7 +142,7 @@ All model hyperparameters and training configurations are defined in `src/utils/
 
 The local environment targets Linux x86-64 with an NVIDIA GPU and a driver
 that supports CUDA 11.7. Conda installs Python 3.11, PyTorch 2.0.1, and the
-CUDA 11.7 runtime. For Spartan HPC, follow the [Spartan setup guide](scripts/spartan/README.md).
+CUDA 11.7 runtime. For Spartan HPC, follow the [Spartan setup guide](scripts/a100/README.md).
 
 From the repository root, create `codereview` with Python 3.11 and IPython.
 Then install the CUDA-enabled PyTorch build and the project dependencies.
