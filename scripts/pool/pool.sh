@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Parallel revision pool: runs the chunks.sh inventory in dependency order inside one
-# Slurm allocation (scripts/spartan/revision.slurm), packing tasks onto its GPUs by measured
+# Slurm allocation (scripts/a100/revision.slurm), packing tasks onto its GPUs by measured
 # pilot memory. Each task is the unchanged `run_chunk.sh --body` command with exactly one
 # visible GPU. Before the walltime it checkpoints every task (USR1, exit 75) and leaves the
 # rest for the next job; state lives on the shared filesystem so any later job continues.
@@ -15,7 +15,7 @@ if [[ "${DRY:-0}" == 1 ]]; then    # preview only: never touch pool state or sta
     exit 0
 fi
 [[ -n "${SLURM_JOB_ID:-}" || "${RCG_POOL_ALLOW_LOCAL:-0}" == 1 ]] || {
-    echo "Run the pool inside a Slurm job (scripts/spartan/revision.slurm); DRY=1 previews" >&2; exit 2; }
+    echo "Run the pool inside a Slurm job (scripts/a100/revision.slurm); DRY=1 previews" >&2; exit 2; }
 
 STATE="${RCG_POOL_STATE:-${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}/.pool}"
 ADMISSIONS="${RCG_PREFLIGHT_ROOT:-$ROOT/assets/results/a100-native-preflight}/admissions"
@@ -388,5 +388,5 @@ for id in "${IDS[@]}"; do      # runnable work left for a later pool?
     [[ -e "$STATE/done/$id" || -e "$STATE/failed/$id" || -n "${BLOCKED[$id]:-}" ]] && continue
     leave 75
 done
-log "only failed or blocked tasks remain; fix them, remove $STATE/failed/<id>, then run scripts/spartan/revision.slurm again"
+log "only failed or blocked tasks remain; fix them, remove $STATE/failed/<id>, then run scripts/a100/revision.slurm again"
 leave 1

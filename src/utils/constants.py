@@ -21,7 +21,7 @@ LOGGING_STEPS               = 5
 SEED                        = 42
 
 DATASET_NAME                = "acra_by_ls_pt" # Can be: acra_by_ls_pt or trans_review
-HUGGINGFACE_DATASET_ID      = "your-huggingface-username/acra-by-ls-pt-dataset" # Update with your actual dataset ID
+HUGGINGFACE_DATASET_ID      = "PhucInAI/code-review-comment-generation"  # public; inputs mirrored at local paths
 TRAIN_DATA_DIR              = DATA_DIR + 'Code_Review/msg-train.jsonl'
 VAL_DATA_DIR                = DATA_DIR + 'Code_Review/msg-valid.jsonl'
 TEST_DATA_DIR               = DATA_DIR + 'Code_Review/msg-test.jsonl'

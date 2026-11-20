@@ -3,6 +3,8 @@
 from copy import deepcopy
 
 PROFILES = ("a100",)
+A100_ATTENTION_IMPLEMENTATIONS = ("sdpa", "eager")
+DEFAULT_A100_ATTENTION = "sdpa"
 # Corpus metrics run on the GPU in batches (same metric semantics, recorded in resources).
 METRIC_RESOURCES = {"a100": {"device": "cuda", "batch_size": 64}}
 

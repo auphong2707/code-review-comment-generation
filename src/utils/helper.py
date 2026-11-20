@@ -93,11 +93,15 @@ def _ensure_dataset_files(data_files: dict) -> None:
             f"dataset files missing ({missing}) and HUGGINGFACE_DATASET_ID is the "
             "placeholder value; place the jsonl files locally or set a real dataset repo id"
         )
-    login(token=os.getenv("HUGGINGFACE_TOKEN"))
+    missing = [path for path in data_files.values() if not os.path.exists(path)]
+    token = os.getenv("HUGGINGFACE_TOKEN") or os.getenv("HF_TOKEN")
+    if token:
+        login(token=token)
+    # The dataset repo mirrors local paths; fetch only the missing files (not every results jsonl).
     snapshot_download(repo_id=HUGGINGFACE_DATASET_ID,
                       repo_type="dataset",
                       local_dir=".",
-                      allow_patterns="*.jsonl"
+                      allow_patterns=[os.path.normpath(p) for p in missing],
                      )
 
 

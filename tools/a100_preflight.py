@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.training.recovery import (atomic_json, file_digest, fingerprint, install_stop_handlers,
                                    latest_recovery_checkpoint, stop_requested, INCOMPLETE)
+from src.training.memory_profile import A100_ATTENTION_IMPLEMENTATIONS, DEFAULT_A100_ATTENTION
 
 
 def hardware_policy():
@@ -97,13 +98,14 @@ def training_probe(args, digest, hardware):
     from src.training.registry import get_spec, resolve_run
     # The generation batch is part of the pilot identity: a changed GEN_BS gets a fresh pilot.
     root = (Path(args.out_root) / "pilots" / digest[:12] / args.dataset / args.model / args.method
-            / f"gen{args.gen_batch_size}")
+            / args.attn_implementation / f"gen{args.gen_batch_size}")
     _, _, spec = get_spec(args.model, args.method)
     run_dir = Path(resolve_run(spec, learning_rate=5e-5, results_root=str(root))["experiment_results_dir"])
     result_path = run_dir / "complete_results.json"
     command = [sys.executable, "-m", "src.train", "--model", args.model, "--method", args.method,
                "--dataset", args.dataset, "--memory-profile", "a100", "--results-root", str(root),
                "--gen-batch-size", str(args.gen_batch_size),
+               "--attn-implementation", args.attn_implementation,
                "--lifecycle-probe", "--learning_rate", "5e-5", "--recovery-steps", "1"]
     install_stop_handlers()
     if not result_path.exists():
@@ -129,6 +131,7 @@ def training_probe(args, digest, hardware):
     peak = peaks["peak_vram_reserved_gb"]
     report = {"runtime_digest": digest, "hardware": hardware, "model": args.model,
               "method": args.method, "dataset": args.dataset, "gen_batch_size": args.gen_batch_size,
+              "attn_implementation": args.attn_implementation,
               "peak_reserved_gib": peak,
               "peak_allocated_gib": peaks["peak_vram_allocated_gb"],
               "environment": environment_identity(),
@@ -146,12 +149,14 @@ def main(argv=None):
     parser.add_argument("--out-root", required=True)
     parser.add_argument("--gen-batch-size", type=int, default=1,
                         help="Campaign generation batch size the pilot must cover")
+    parser.add_argument("--attn-implementation", choices=A100_ATTENTION_IMPLEMENTATIONS,
+                        default=DEFAULT_A100_ATTENTION)
     parser.add_argument("--check", action="store_true", help="Read-only admission check, no GPU imports")
     args = parser.parse_args(argv)
     digest = runtime_digest()
     path = Path(args.out_root) / "admissions" / f"train_{args.model}_{args.method}_{args.dataset}.json"
     expected = {"model": args.model, "method": args.method, "dataset": args.dataset,
-                "gen_batch_size": args.gen_batch_size}
+                "gen_batch_size": args.gen_batch_size, "attn_implementation": args.attn_implementation}
     if args.check:
         check_report(json.loads(path.read_text()), digest, expected)
         print(f"Qualified: {args.model}/{args.method}/{args.dataset}")
@@ -159,7 +164,7 @@ def main(argv=None):
     hardware = require_gpu()
     report = training_probe(args, digest, hardware)
     atomic_json(path, report)
-    check_report(report, digest)
+    check_report(report, digest, expected)
     print(json.dumps(report, indent=2))
 
 

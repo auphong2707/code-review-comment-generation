@@ -35,7 +35,11 @@ rsync -av --partial \
   ./ spartan:/data/gpfs/projects/<punimXXXX>/code-review-comment-generation/
 ```
 
-Inputs the job checks in section 3:
+Inputs the job checks in section 3. The datasets (raw CodeReviewer/Zenodo and TransReview
+files) and the 54 legacy judge inputs are mirrored at these paths in the public HF dataset, and
+section 02 downloads any that are missing. If the compute node has no internet, fetch them on the
+login node with `bash scripts/a100/revision.slurm --hf-sync-only`. Rsyncing them is optional.
+
 
 - `assets/data/Trans_Review/` and `assets/data/Code_Review/`.
 - `paper/generated/cr_judge_subset.json` (in the code).
@@ -84,11 +88,11 @@ continuations see them.
 ## 4. Run
 
 ```bash
-bash scripts/spartan/revision.slurm --preview          # print the sbatch command
-bash scripts/spartan/revision.slurm                    # 2 x A100 (default)
-bash scripts/spartan/revision.slurm --gpus 4           # 1, 2, 3 or 4 A100s
-bash scripts/spartan/revision.slurm --time 2-00:00:00  # shorter walltime (default 7-00:00:00)
-bash scripts/spartan/revision.slurm --status           # per-section progress + queue
+bash scripts/a100/revision.slurm --preview          # print the sbatch command
+bash scripts/a100/revision.slurm                    # 2 x A100 (default)
+bash scripts/a100/revision.slurm --gpus 4           # 1, 2, 3 or 4 A100s
+bash scripts/a100/revision.slurm --time 2-00:00:00  # shorter walltime (default 7-00:00:00)
+bash scripts/a100/revision.slurm --status           # per-section progress + queue
 ```
 
 Only one `rcg_revision` job is queued at a time. Before running, the job checks what is
@@ -106,8 +110,8 @@ If compute nodes cannot reach huggingface.co, section 2 stops the job with exit 
 run the check on the login node and submit without the download:
 
 ```bash
-bash scripts/spartan/revision.slurm --hf-sync-only
-RCG_HF_SYNC=0 bash scripts/spartan/revision.slurm
+bash scripts/a100/revision.slurm --hf-sync-only
+RCG_HF_SYNC=0 bash scripts/a100/revision.slurm
 ```
 
 ## 5. Logs
@@ -160,6 +164,6 @@ results. Once on the server, `hf upload-large-folder --help` should list `--incl
 ## Local checks (no GPU, no Python)
 
 ```bash
-bash scripts/spartan/check_job.sh     # this job file, with fake sbatch/squeue/hf/python
+bash scripts/a100/check_job.sh     # this job file, with fake sbatch/squeue/hf/python
 bash scripts/pool/check_pool.sh       # the pool scheduler, with fake tasks and Slurm
 ```

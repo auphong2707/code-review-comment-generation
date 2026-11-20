@@ -21,6 +21,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).absolute().parent.parent))
 
 from src.training.registry import get_spec, resolve_run, supported_methods, supported_models
+from src.training.memory_profile import (
+    A100_ATTENTION_IMPLEMENTATIONS, DEFAULT_A100_ATTENTION, apply_memory_profile,
+)
 
 
 def build_parser():
@@ -158,10 +161,9 @@ def main(argv=None):
             raise SystemExit("--memory-profile requires an isolated --results-root")
         if args.gen_batch_size < 1:
             raise SystemExit("--gen-batch-size must be positive")
-        if args.attn_implementation not in (None, "sdpa"):
-            raise SystemExit("The A100 profile requires SDPA")
-        args.attn_implementation = "sdpa"
-        from src.training.memory_profile import apply_memory_profile
+        if args.attn_implementation not in (None, *A100_ATTENTION_IMPLEMENTATIONS):
+            raise SystemExit("The A100 profile supports --attn-implementation sdpa or eager")
+        args.attn_implementation = args.attn_implementation or DEFAULT_A100_ATTENTION
         spec, profile_overrides = apply_memory_profile(
             spec, resolve_protocol_overrides(model, args), args.memory_profile, model, method)
     else:

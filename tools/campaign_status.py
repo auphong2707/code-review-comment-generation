@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 from src.training.recovery import file_digest, fingerprint, validate_training_result, validate_icl_result
 from src.train import build_parser, recovery_identity, resolve_protocol_overrides
 from src.training.registry import get_spec, resolve_run
-from src.training.memory_profile import apply_memory_profile
+from src.training.memory_profile import DEFAULT_A100_ATTENTION, apply_memory_profile
 from src.icl.naming import icl_result_filename
 from src.utils.constants import DATASET_CONFIGS, LR
 from tools.select_sweep_lr import best_metric
@@ -88,7 +88,8 @@ def icl_result(argv):
                     selection_method=flags.get("selection_method", "random"),
                     demo_seed=int(flags["demo_seed"]) if "demo_seed" in flags else None,
                     prompt_version="v2", memory_profile="a100", batch_size=int(flags["batch_size"]),
-                    max_prompt_tokens=2048, attn_implementation="sdpa", seed=42,
+                    max_prompt_tokens=2048,
+                    attn_implementation=flags.get("attn_implementation", DEFAULT_A100_ATTENTION), seed=42,
                     allow_exact_match=False, max_samples=None, llm_judge=False,
                     sample_index_file=flags.get("sample_index_file"))
     name = icl_result_filename(expected["model_name"], expected["num_examples"],

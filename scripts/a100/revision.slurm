@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # =====================================================================================
 # Revision campaign on Spartan HPC (University of Melbourne, Slurm): the single job file.
-# Setup (environment, inputs, .env): scripts/spartan/README.md. From the repository root:
+# Setup (environment, inputs, .env): scripts/a100/README.md. From the repository root:
 #
-#   bash scripts/spartan/revision.slurm                     submit with 2 x A100 80GB (default)
-#   bash scripts/spartan/revision.slurm --gpus 1|2|3|4      submit with that many A100s
+#   bash scripts/a100/revision.slurm                     submit with 2 x A100 80GB (default)
+#   bash scripts/a100/revision.slurm --gpus 1|2|3|4      submit with that many A100s
 #        [--mem-gb N] [--time D-HH:MM:SS] [--preview]       host RAM (default 32 GB/GPU), walltime
 #                                                           (default 7-00:00:00); --preview prints only
-#   bash scripts/spartan/revision.slurm --hf-sync-only      section 2 on the login node (no GPU)
-#   bash scripts/spartan/revision.slurm --status            per-section progress (read-only)
-#   sbatch scripts/spartan/revision.slurm                   also works (2 GPUs; the output
+#   bash scripts/a100/revision.slurm --hf-sync-only      section 2 on the login node (no GPU)
+#   bash scripts/a100/revision.slurm --status            per-section progress (read-only)
+#   sbatch scripts/a100/revision.slurm                   also works (2 GPUs; the output
 #                                                           directory assets/logs/spartan must exist)
 #
 # Required: RCG_PYTHON = absolute python of the rcg-a100 environment. Optional:
@@ -48,7 +48,7 @@ if [[ -n "${RCG_ROOT:-}" ]]; then ROOT="$RCG_ROOT"
 elif [[ -n "${SLURM_JOB_ID:-}" && "${SLURM_JOB_NAME:-}" == "$JOB_NAME" ]]; then ROOT="${SLURM_SUBMIT_DIR:-$PWD}"
 else ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; fi
 cd "$ROOT" 2>/dev/null && [[ -f src/train.py ]] || { echo "Not the repository root: $ROOT (set RCG_ROOT)" >&2; exit 2; }
-SELF="$ROOT/scripts/spartan/revision.slurm"
+SELF="$ROOT/scripts/a100/revision.slurm"
 RESULTS="${RCG_RESULTS_ROOT:-$ROOT/assets/results/revision-a100-native}"
 JUDGES="${RCG_JUDGE_ROOT:-$ROOT/assets/results/a100-native-judges}"
 STATE="${RCG_POOL_STATE:-$RESULTS/.pool}"
@@ -68,7 +68,10 @@ REL_RESULTS=$(relative "$RESULTS") && REL_JUDGES=$(relative "$JUDGES") &&
 # Resume state, locks and checkpoints never leave the cluster (same scope as the
 # 2026-11-03 push). Weights are not downloaded: no campaign step reads trained weights.
 EXCLUDE=('*/checkpoint-*' '*/.pool/*' '*.lock' '*/test_progress/*' '*.progress/*' '.cache/*')
-DOWNLOAD_INCLUDE=("$REL_RESULTS/*" "$REL_JUDGES/*")
+# Inputs (datasets, legacy judge inputs) are mirrored at their local paths; never re-pushed.
+INPUT_INCLUDE=("assets/data/Trans_Review/*" "assets/data/Code_Review/*"
+               "assets/models/llm-as-judge/table-results/inputs/*")
+DOWNLOAD_INCLUDE=("$REL_RESULTS/*" "$REL_JUDGES/*" "${INPUT_INCLUDE[@]}")
 DOWNLOAD_EXCLUDE=("${EXCLUDE[@]}")
 [[ "${RCG_HF_WEIGHTS:-0}" == 1 ]] || DOWNLOAD_EXCLUDE+=('*.safetensors' '*.bin' '*.pt' '*.pth')
 PUSH_INCLUDE=("$REL_RESULTS/*" "$REL_JUDGES/*" "$REL_TASK_LOGS/*" "$REL_LOGS/*")
@@ -184,7 +187,7 @@ sec_hf_status() {
         echo "-- download: https://huggingface.co/datasets/$HF_REPO (${DOWNLOAD_INCLUDE[*]})"
         hf_sync || {
             echo "HF check failed (no internet on this node?). Run it on the login node:" >&2
-            echo "  bash scripts/spartan/revision.slurm --hf-sync-only" >&2
+            echo "  bash scripts/a100/revision.slurm --hf-sync-only" >&2
             echo "then resubmit with RCG_HF_SYNC=0 exported (status from local files only)." >&2
             return 3; }
     else
@@ -214,6 +217,10 @@ sec_inputs() {
     for dir in assets/data/Trans_Review assets/data/Code_Review; do
         [[ -n "$(ls -A "$dir" 2>/dev/null)" ]] && echo "OK $dir" || { echo "MISSING $dir" >&2; rc=2; }
     done
+    [[ -n "$(ls -A assets/models/llm-as-judge/table-results/inputs 2>/dev/null)" ]] &&
+        echo "OK assets/models/llm-as-judge/table-results/inputs" ||
+        { echo "MISSING assets/models/llm-as-judge/table-results/inputs" >&2; rc=2; }
+    (( rc == 0 )) || echo "Fetch data/legacy inputs on the login node: bash scripts/a100/revision.slurm --hf-sync-only" >&2
     [[ -s paper/generated/cr_judge_subset.json ]] && echo "OK paper/generated/cr_judge_subset.json" ||
         { echo "MISSING paper/generated/cr_judge_subset.json" >&2; rc=2; }
     source scripts/pool/check_judge_inputs.sh
@@ -273,7 +280,7 @@ continue_campaign() {
     elif [[ "${RCG_SPARTAN_RESUBMIT:-1}" != 1 ]]; then CONTINUATION="not submitted: RCG_SPARTAN_RESUBMIT=0"
     elif out=$(GPUS="$SLURM_GPUS_ON_NODE" MEM_GB="${RCG_SPARTAN_MEM_GB:-}" WALLTIME="${RCG_SPARTAN_TIME:-7-00:00:00}" \
                   submit continue 2>&1); then CONTINUATION="submitted: $out"
-    else CONTINUATION="FAILED ($out); run: bash scripts/spartan/revision.slurm --gpus $SLURM_GPUS_ON_NODE"; fi
+    else CONTINUATION="FAILED ($out); run: bash scripts/a100/revision.slurm --gpus $SLURM_GPUS_ON_NODE"; fi
     echo "continuation $CONTINUATION"
 }
 sec_campaign() {

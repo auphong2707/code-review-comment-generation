@@ -153,7 +153,8 @@ def test_filtered_training_does_not_require_admission(tmp_path):
     assert 'SKIP excluded' in output
 
 
-def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("attention", ["sdpa", "eager"])
+def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp_path, monkeypatch, attention):
     from src.train import build_parser, recovery_identity, resolve_protocol_overrides
     from src.training.registry import get_spec, resolve_run
     from src.training.memory_profile import apply_memory_profile
@@ -161,7 +162,7 @@ def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp
     monkeypatch.setitem(status.DATASET_CONFIGS, 'trans_review', {'data_files': dict(train=str(data), val=str(data), test=str(data))})
     argv = [sys.executable, '-m', 'src.train', '--model', 'codet5', '--method', 'lora',
             '--learning_rate', '5e-5', '--dataset', 'trans_review', '--results-root', str(tmp_path),
-            '--memory-profile', 'a100', '--gen-batch-size', '32', '--attn-implementation', 'sdpa']
+            '--memory-profile', 'a100', '--gen-batch-size', '32', '--attn-implementation', attention]
     args = build_parser().parse_args(argv[3:])
     model, method, spec = get_spec(args.model, args.method)
     spec, overrides = apply_memory_profile(spec, resolve_protocol_overrides(model, args), 'a100', model, method)
@@ -175,12 +176,12 @@ def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp
     (root/'complete_results.json').write_text(json.dumps(result))
     icl_argv = [sys.executable, '-m', 'src.icl_inference', '--model_name', 'qwen25',
                 '--dataset', 'trans_review', '--num_examples', '0', '--batch-size', '8',
-                '--results_dir', str(tmp_path)]
+                '--attn-implementation', attention, '--results_dir', str(tmp_path)]
     path = tmp_path/'qwen25_icl_0ex_random_v2.json'
     icl_identity = dict(model_name='qwen25', dataset='trans_review', num_examples=0,
                         selection_method='random', demo_seed=None, prompt_version='v2',
                         memory_profile='a100', batch_size=8, max_prompt_tokens=2048,
-                        attn_implementation='sdpa', seed=42, allow_exact_match=False,
+                        attn_implementation=attention, seed=42, allow_exact_match=False,
                         max_samples=None, llm_judge=False, sample_index_file=None,
                         train_data_sha256=status.digest(str(data)), test_data_sha256=status.digest(str(data)))
     icl_stamp = fingerprint(icl_identity)
@@ -190,6 +191,11 @@ def test_campaign_gate_accepts_bound_complete_artifacts_then_rejects_changes(tmp
     path.write_text(json.dumps(icl))
     monkeypatch.setattr(status, 'commands', lambda *args: [dict(label='train', argv=argv), dict(label='icl', argv=icl_argv)])
     assert status.main(['A', '--results-root', str(tmp_path)]) == 0
+    if attention == 'eager':
+        index = icl_argv.index('--attn-implementation') + 1
+        icl_argv[index] = 'sdpa'
+        assert status.main(['A', '--results-root', str(tmp_path)]) == 1
+        icl_argv[index] = 'eager'
     icl['num_test_samples'] = 2; path.write_text(json.dumps(icl))
     assert status.main(['A', '--results-root', str(tmp_path)]) == 1
     icl['num_test_samples'] = 1; path.write_text(json.dumps(icl))

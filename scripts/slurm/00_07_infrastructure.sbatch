@@ -29,15 +29,18 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
         for method in $methods; do
             run_step "probe_tr_${model}_${method}" "$PYTHON" tools/a100_preflight.py \
                 --model "$model" --method "$method" --dataset trans_review \
-                --gen-batch-size "${GEN_BS[$model]}" --out-root "$PREFLIGHT_ROOT"
+                --gen-batch-size "${GEN_BS[$model]}" --attn-implementation "$A100_ATTENTION" \
+                --out-root "$PREFLIGHT_ROOT"
         done
     done
     run_step probe_14b_qlora_trans_review "$PYTHON" tools/a100_preflight.py \
         --model qwen25-14b --method qlora --dataset trans_review \
-        --gen-batch-size "${GEN_BS[qwen25-14b]}" --out-root "$PREFLIGHT_ROOT"
+        --gen-batch-size "${GEN_BS[qwen25-14b]}" --attn-implementation "$A100_ATTENTION" \
+        --out-root "$PREFLIGHT_ROOT"
     for model in qwen25-0.5b qwen25 qwen15; do
         run_step "probe_icl_$model" "$PYTHON" tools/a100_inference_probe.py \
-            --kind icl --model "$model" --batch-size "${ICL_BS[$model]}" --out-root "$PREFLIGHT_ROOT"
+            --kind icl --model "$model" --batch-size "${ICL_BS[$model]}" \
+            --attn-implementation "$A100_ATTENTION" --out-root "$PREFLIGHT_ROOT"
     done
     for model in qwen-judge llama-judge; do
         run_step "probe_$model" "$PYTHON" tools/a100_inference_probe.py --kind judge \
@@ -46,15 +49,16 @@ if [[ "${RCG_PROBES:-1}" == 1 ]]; then
     done
     # Synthetic pilots alone cannot check dataset parsing, retrieval, metrics or
     # judge input/cache/output plumbing. Exercise those paths on bounded rows, in roots
-    # keyed by batch/k so a re-qualification never meets (or reuses) an older smoke run.
+    # keyed by batch/k and (for ICL) attention backend.
     for dataset in trans_review acra_by_ls_pt; do
         subset=(); [[ "$dataset" != acra_by_ls_pt ]] || subset=(--sample-index-file "$CR_SUBSET")
         for model in qwen25-0.5b qwen25 qwen15; do
             run_step "smoke_icl_${dataset}_${model}" "$PYTHON" -m src.icl_inference \
                 --model_name "$model" --dataset "$dataset" --prompt-version v2 \
                 --memory-profile a100 --batch-size "${ICL_BS[$model]}" --max-prompt-tokens 2048 \
-                --attn-implementation sdpa --num_examples 3 --selection_method bm25 "${subset[@]}" \
-                --max_samples "${ICL_BS[$model]}" --results_dir "$PREFLIGHT_ROOT/icl-smoke/bs${ICL_BS[$model]}/$dataset" --skip-if-complete
+                --attn-implementation "$A100_ATTENTION" --num_examples 3 --selection_method bm25 "${subset[@]}" \
+                --max_samples "${ICL_BS[$model]}" \
+                --results_dir "$PREFLIGHT_ROOT/icl-smoke/$A100_ATTENTION/bs${ICL_BS[$model]}/$dataset" --skip-if-complete
         done
     done
     run_step smoke_judge_subset test -r paper/generated/cr_judge_subset.json

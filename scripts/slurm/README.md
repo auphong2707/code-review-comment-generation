@@ -1,7 +1,7 @@
 # A100 80GB revision campaign definitions
 
 These six files define the campaign steps. On Spartan they are run by the single job
-file [`scripts/spartan/revision.slurm`](../spartan/README.md), not submitted one by one.
+file [`scripts/a100/revision.slurm`](../a100/README.md), not submitted one by one.
 Its pool (`scripts/pool/pool.sh`) splits them into 226 tasks (`scripts/pool/chunks.sh`),
 runs them in dependency order on the job's 1–4 A100s, and executes each step through
 `scripts/pool/run_chunk.sh`, which sources the matching file below. The `#SBATCH`
@@ -17,6 +17,20 @@ lines are not used by the pool.
 | `16_campaign_j.sbatch` | Qwen revision judging; Llama legacy/revision judging |
 
 `common.sh` is the shared runtime (batch sizes, admissions, `run_step`).
+
+For the CUDA 11.7 `codereview` environment with PyTorch 2.0.1, set
+`RCG_A100_ATTENTION=eager` for the campaign, including its infrastructure task
+and completion checks. Use separate results, admissions, and judge roots when
+switching attention backends so existing results keep their original provenance.
+The shared campaign defaults to SDPA. Qualify the selected backend on the A100
+before starting the campaign.
+
+```bash
+export RCG_A100_ATTENTION=eager
+export RCG_RESULTS_ROOT="$PWD/assets/results/revision-a100-eager"
+export RCG_PREFLIGHT_ROOT="$PWD/assets/results/a100-eager-preflight"
+export RCG_JUDGE_ROOT="$PWD/assets/results/a100-eager-judges"
+```
 
 ## Local review: no Python
 
@@ -103,7 +117,7 @@ dependents.
 
 Use separate roots from earlier runs and frozen inputs. Training leaf names and
 result/judge schemas are unchanged. Judge roots remain separate by backend and
-legacy/revision input set. Job and section logs go to `assets/logs/spartan/` (scripts/spartan/README.md).
+legacy/revision input set. Job and section logs go to `assets/logs/spartan/` (scripts/a100/README.md).
 
 J checks A/B/C/D by default. Server-only completion command:
 
