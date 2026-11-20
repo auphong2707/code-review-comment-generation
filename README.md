@@ -144,11 +144,14 @@ The local environment targets Linux x86-64 with an NVIDIA GPU and a driver
 that supports CUDA 11.7. Conda installs Python 3.11, PyTorch 2.0.1, and the
 CUDA 11.7 runtime. For Spartan HPC, follow the [Spartan setup guide](scripts/spartan/README.md).
 
-From the repository root, create the environment and install the Python dependencies.
+From the repository root, create `codereview` with Python 3.11 and IPython.
+Then install the CUDA-enabled PyTorch build and the project dependencies.
 
 ```bash
-conda env create --file environment.yml
-conda activate rcg-cu117
+conda create -n codereview python=3.11 ipython pip --override-channels -c conda-forge
+conda activate codereview
+conda install --override-channels -c pytorch -c nvidia -c conda-forge \
+    'pytorch=2.0.1=*cuda11.7*' pytorch-cuda=11.7 'mkl<2024.1'
 DS_BUILD_OPS=0 python -m pip install -r requirements.txt
 ```
 

@@ -1,4 +1,4 @@
-# Local Conda environment dependencies. Create environment.yml before installing.
+# Local Conda environment dependencies. Install the Conda PyTorch build first.
 torch==2.0.1
 # PyTorch's extension loader imports pkg_resources, and Triton requires CMake and lit.
 setuptools==80.9.0

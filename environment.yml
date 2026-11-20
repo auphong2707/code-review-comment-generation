@@ -1,4 +1,4 @@
-name: rcg-cu117
+name: codereview
 channels:
   - pytorch
   - nvidia
@@ -6,6 +6,7 @@ channels:
   - nodefaults
 dependencies:
   - python=3.11
+  - ipython
   - pip
   - pytorch=2.0.1=*cuda11.7*
   - pytorch-cuda=11.7
